@@ -58,6 +58,12 @@ go build -o feishu-bot .
 ./feishu-bot console --config config.local.yaml
 ```
 
+### 日志
+
+- `start` 模式日志写入 `logs/feishu-bot.log`
+- 跨天自动归档为 `logs/feishu-bot-YYYY-MM-DD.log.gz`（gzip 压缩）
+- `console` 模式日志直接输出到终端
+
 ## 命令列表
 
 | 命令 | 说明 | 示例 |
