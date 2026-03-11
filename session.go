@@ -20,15 +20,24 @@ type Session struct {
 
 // SessionManager 管理多个 tmux Claude Code 会话
 type SessionManager struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session // key: chatID 或 userID
-	config   *Config
+	mu                sync.RWMutex
+	sessions          map[string]*Session // key: chatID 或 userID
+	config            *Config
+	interactivePrompt chan *InteractivePrompt // 交互提示通道
+}
+
+// InteractivePrompt 表示检测到的交互式提示
+type InteractivePrompt struct {
+	SessionKey string
+	Prompt     string
+	Timestamp  time.Time
 }
 
 func NewSessionManager(cfg *Config) *SessionManager {
 	return &SessionManager{
-		sessions: make(map[string]*Session),
-		config:   cfg,
+		sessions:          make(map[string]*Session),
+		config:            cfg,
+		interactivePrompt: make(chan *InteractivePrompt, 10),
 	}
 }
 
@@ -187,6 +196,13 @@ func (sm *SessionManager) waitForResponse(name string, beforeLines int) (string,
 			return "", fmt.Errorf("捕获输出失败: %w", err)
 		}
 
+		// 检测交互式提示
+		if isInteractivePrompt(content) {
+			newOutput := extractNewOutput(content, beforeLines)
+			// 返回带有交互提示标识的输出
+			return newOutput + "\n\n⚠️ 检测到交互式提示，Claude Code 正在等待输入。\n💡 请使用 /s 命令发送您的响应。", nil
+		}
+
 		if content == lastContent && content != "" {
 			stableCount++
 			// 连续 4 次（2秒）没有变化，认为输出完成
@@ -257,10 +273,10 @@ func filterEnvForSession(parentEnv []string) []string {
 
 	// 需要过滤的环境变量前缀/名称（防止嵌套会话检测）
 	blockedPrefixes := []string{
-		"CLAUDECODE",           // Claude Code 会话标识
-		"ANTHROPIC_",           // Anthropic 相关的会话变量
-		"CLAUDE_SESSION",       // Claude 会话相关
-		"AGENT_SDK_",          // Agent SDK 相关
+		"CLAUDECODE",     // Claude Code 会话标识
+		"ANTHROPIC_",     // Anthropic 相关的会话变量
+		"CLAUDE_SESSION", // Claude 会话相关
+		"AGENT_SDK_",     // Agent SDK 相关
 	}
 
 	for _, env := range parentEnv {
@@ -278,3 +294,58 @@ func filterEnvForSession(parentEnv []string) []string {
 
 	return filtered
 }
+
+// isInteractivePrompt 检测输出是否包含交互式提示
+// 检测常见的交互提示模式，如 y/n 问题、确认提示等
+func isInteractivePrompt(content string) bool {
+	// 移除 ANSI 转义码
+	cleanContent := stripANSI(content)
+
+	// 获取最后几行（交互提示通常在末尾）
+	lines := strings.Split(cleanContent, "\n")
+	if len(lines) == 0 {
+		return false
+	}
+
+	// 检查最后 3 行
+	checkLines := 3
+	if len(lines) < checkLines {
+		checkLines = len(lines)
+	}
+
+	lastLines := strings.Join(lines[len(lines)-checkLines:], "\n")
+	lastLinesLower := strings.ToLower(lastLines)
+
+	// 常见的交互式提示模式
+	interactivePatterns := []string{
+		"(y/n)",
+		"[y/n]",
+		"(yes/no)",
+		"[yes/no]",
+		"continue?",
+		"proceed?",
+		"confirm?",
+		"are you sure?",
+		"press enter",
+		"按回车",
+		"确认",
+		"是否继续",
+		"y or n",
+		"yes or no",
+		"> ", // 命令提示符
+	}
+
+	for _, pattern := range interactivePatterns {
+		if strings.Contains(lastLinesLower, pattern) {
+			// 额外检查：确保不是在代码块或输出中
+			// 如果最后一行很长（>100字符），可能是输出而非提示
+			lastLine := strings.TrimSpace(lines[len(lines)-1])
+			if len(lastLine) < 100 {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+

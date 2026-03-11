@@ -95,9 +95,5 @@ func (c *SendCommand) Execute(ctx context.Context, args string, meta *MessageMet
 		return fmt.Sprintf("发送失败: %s", err), nil
 	}
 
-	if len(response) > 4000 {
-		response = response[:4000] + "\n...(输出已截断)"
-	}
-
 	return response, nil
 }

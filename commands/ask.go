@@ -159,11 +159,6 @@ func (c *AskCommand) Execute(ctx context.Context, args string, meta *MessageMeta
 		result = "(无输出)"
 	}
 
-	// 飞书消息有长度限制，截断过长的输出
-	if len(result) > 4000 {
-		result = result[:4000] + "\n...(输出已截断)"
-	}
-
 	return result, nil
 }
 

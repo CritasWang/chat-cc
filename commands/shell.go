@@ -78,10 +78,6 @@ func (c *ShellCommand) Execute(ctx context.Context, args string, meta *MessageMe
 		result = "(无输出)"
 	}
 
-	if len(result) > 4000 {
-		result = result[:4000] + "\n...(输出已截断)"
-	}
-
 	return result, nil
 }
 

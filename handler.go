@@ -101,12 +101,21 @@ func NewEventHandler(cfg *Config, router *Router, replier *Replier) *dispatcher.
 			if result != "" {
 				// 如果之前发了"处理中"，更新那条消息
 				if processingMsgID != "" {
-					if updateErr := replier.Update(processingMsgID, result); updateErr != nil {
+					// 对于长消息，先更新为提示，然后分块回复
+					if len(result) > 3500 {
+						replier.Update(processingMsgID, "✅ 处理完成，正在发送结果...")
+						replier.ReplyChunked(meta.MessageID, result, 3500)
+					} else if updateErr := replier.Update(processingMsgID, result); updateErr != nil {
 						// 更新失败则发新消息
 						replier.Reply(meta.MessageID, result)
 					}
 				} else {
-					replier.Reply(meta.MessageID, result)
+					// 使用分块回复处理长消息
+					if len(result) > 3500 {
+						replier.ReplyChunked(meta.MessageID, result, 3500)
+					} else {
+						replier.Reply(meta.MessageID, result)
+					}
 				}
 			}
 		}()

@@ -37,6 +37,9 @@ type Config struct {
 	ClaudeAskTimeout     int `yaml:"claude_ask_timeout"`     // /ask 命令超时（默认 50 分钟）
 	ClaudeSessionTimeout int `yaml:"claude_session_timeout"` // /session 会话响应超时（默认 50 分钟）
 
+	// 消息分块配置
+	MaxChunkSize int `yaml:"max_chunk_size"` // 消息分块大小（默认 3500 字符）
+
 	// 日志级别
 	LogLevel string `yaml:"log_level"` // debug, info, warn, error
 }
@@ -60,8 +63,9 @@ func DefaultConfig() *Config {
 		},
 		HookPort:             9876,
 		LogLevel:             "info",
-		ClaudeAskTimeout:     50, // 默认 50 分钟
-		ClaudeSessionTimeout: 50, // 默认 50 分钟
+		ClaudeAskTimeout:     50,   // 默认 50 分钟
+		ClaudeSessionTimeout: 50,   // 默认 50 分钟
+		MaxChunkSize:         3500, // 默认 3500 字符
 	}
 }
 

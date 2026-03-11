@@ -17,6 +17,9 @@ claude_danger_mode: false                    # 是否跳过所有权限检查
 claude_ask_timeout: 50                       # /ask 命令超时时间（默认 50 分钟）
 claude_session_timeout: 50                   # /session 会话响应超时（默认 50 分钟）
 
+# 消息分块配置
+max_chunk_size: 3500                         # 长消息分块大小（默认 3500 字符）
+
 # claude -p 模式下允许的工具（非 danger 模式时生效）
 claude_allowed_tools:
   - "Read"
