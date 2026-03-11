@@ -69,6 +69,7 @@ func printUsage() {
 	fmt.Println("  restart   重启后台进程")
 	fmt.Println("  status    查看运行状态")
 	fmt.Println("  console   前台运行（日志输出到终端，调试用）")
+	fmt.Println("  help      显示帮助信息")
 	fmt.Println()
 	fmt.Println("选项:")
 	fmt.Println("  --config <path>   配置文件路径（默认: config.yaml）")
