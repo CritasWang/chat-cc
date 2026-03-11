@@ -17,18 +17,87 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "配置文件路径")
-	flag.Parse()
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	subcmd := os.Args[1]
+	if subcmd == "-h" || subcmd == "--help" || subcmd == "help" {
+		printUsage()
+		return
+	}
+
+	fs := flag.NewFlagSet(subcmd, flag.ExitOnError)
+	configPath := fs.String("config", "config.yaml", "配置文件路径")
+	logDirFlag := fs.String("log-dir", "", "日志目录")
+	fs.Parse(os.Args[2:])
+
+	switch subcmd {
+	case "start":
+		if err := daemonStart(*configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+	case "stop":
+		if err := daemonStop(); err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+	case "restart":
+		if err := daemonRestart(*configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+	case "status":
+		daemonStatus()
+	case "console":
+		runBot(*configPath, *logDirFlag)
+	default:
+		fmt.Fprintf(os.Stderr, "未知命令: %s\n\n", subcmd)
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Println("用法: feishu-bot <命令> [选项]")
+	fmt.Println()
+	fmt.Println("命令:")
+	fmt.Println("  start     后台启动（日志写入 logs/ 目录）")
+	fmt.Println("  stop      停止后台进程")
+	fmt.Println("  restart   重启后台进程")
+	fmt.Println("  status    查看运行状态")
+	fmt.Println("  console   前台运行（日志输出到终端，调试用）")
+	fmt.Println()
+	fmt.Println("选项:")
+	fmt.Println("  --config <path>   配置文件路径（默认: config.yaml）")
+	fmt.Println()
+	fmt.Println("示例:")
+	fmt.Println("  feishu-bot start --config config.local.yaml")
+	fmt.Println("  feishu-bot stop")
+	fmt.Println("  feishu-bot console --config config.local.yaml")
+}
+
+func runBot(configPath, logDir string) {
+	// 配置日志输出
+	if logDir != "" {
+		w, err := NewDailyRotateWriter(logDir, "feishu-bot")
+		if err != nil {
+			log.Fatalf("初始化日志失败: %v", err)
+		}
+		defer w.Close()
+		log.SetOutput(w)
+	}
 
 	// 加载配置
-	cfg, err := LoadConfig(*configPath)
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
 
 	// 验证必要配置
 	if cfg.AppID == "" || cfg.AppSecret == "" {
-		// 尝试从环境变量读取
 		if id := os.Getenv("FEISHU_APP_ID"); id != "" {
 			cfg.AppID = id
 		}
@@ -64,17 +133,16 @@ func main() {
 	router.Register(commands.NewStatusCommand())
 	router.Register(helpCmd)
 
-	// 让 help 命令能列出所有命令
 	helpCmd.SetCommands(router.AllCommands())
 
-	// 启动 Hook HTTP 服务（供 Claude Code hooks 回调）
+	// 启动 Hook HTTP 服务
 	hookServer := NewHookServer(cfg.HookPort, replier)
 	hookServer.Start()
 
 	// 创建飞书事件处理器
 	eventHandler := NewEventHandler(cfg, router, replier)
 
-	// 创建 WebSocket 客户端
+	// WebSocket 客户端
 	wsLogLevel := larkcore.LogLevelInfo
 	if cfg.LogLevel == "debug" {
 		wsLogLevel = larkcore.LogLevelDebug
@@ -94,16 +162,16 @@ func main() {
 
 	go func() {
 		<-sigCh
-		fmt.Println("\n正在关闭...")
+		log.Println("正在关闭...")
 		cancel()
 	}()
 
-	// 启动 WebSocket 连接
-	log.Println("🚀 飞书机器人启动中...")
-	log.Printf("   App ID: %s", cfg.AppID[:8]+"...")
-	log.Printf("   Hook 端口: %d", cfg.HookPort)
-	log.Printf("   默认工作目录: %s", cfg.DefaultCWD)
-	log.Printf("   Claude 权限模式: %s", func() string {
+	// 启动
+	log.Println("飞书机器人启动中...")
+	log.Printf("  App ID: %s", cfg.AppID[:8]+"...")
+	log.Printf("  Hook 端口: %d", cfg.HookPort)
+	log.Printf("  默认工作目录: %s", cfg.DefaultCWD)
+	log.Printf("  Claude 权限模式: %s", func() string {
 		if cfg.ClaudeDangerMode {
 			return "danger (全部放行)"
 		}

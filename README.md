@@ -42,11 +42,20 @@ export FEISHU_APP_SECRET="xxx"
 # 编译
 go build -o feishu-bot .
 
-# 运行
-./feishu-bot --config config.local.yaml
+# 后台启动（日志写入 logs/ 目录，按天自动切换）
+./feishu-bot start --config config.local.yaml
 
-# 或直接
-FEISHU_APP_ID=xxx FEISHU_APP_SECRET=xxx go run .
+# 查看状态
+./feishu-bot status
+
+# 停止
+./feishu-bot stop
+
+# 重启
+./feishu-bot restart --config config.local.yaml
+
+# 前台运行（日志输出到终端，调试用）
+./feishu-bot console --config config.local.yaml
 ```
 
 ## 命令列表

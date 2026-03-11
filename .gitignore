@@ -2,3 +2,5 @@ feishu-bot
 config.local.yaml
 *.local.*
 .env
+logs/
+*.pid
