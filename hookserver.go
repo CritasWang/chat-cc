@@ -34,6 +34,13 @@ func NewHookServer(port int, replier *Replier, defaultChatID string) *HookServer
 	}
 }
 
+// SetDefaultChatID 热更新默认通知目标
+func (hs *HookServer) SetDefaultChatID(chatID string) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	hs.defaultChatID = chatID
+}
+
 // Start 启动 HTTP 服务
 func (hs *HookServer) Start() {
 	mux := http.NewServeMux()
@@ -82,7 +89,9 @@ func (hs *HookServer) handleNotify(w http.ResponseWriter, r *http.Request) {
 	// 如果指定了 chat_id，主动推送到飞书；否则用默认
 	chatID := notif.ChatID
 	if chatID == "" {
+		hs.mu.RLock()
 		chatID = hs.defaultChatID
+		hs.mu.RUnlock()
 	}
 	if chatID != "" && notif.Message != "" {
 		if _, err := hs.replier.SendToChat(chatID, notif.Message); err != nil {

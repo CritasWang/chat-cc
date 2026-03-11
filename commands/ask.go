@@ -38,6 +38,20 @@ func (c *AskCommand) IsDangerMode() bool {
 	return c.config.DangerMode
 }
 
+// UpdateConfig 热更新配置
+func (c *AskCommand) UpdateConfig(claudeBin, defaultCWD string, allowedTools []string, dangerMode bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if claudeBin != "" {
+		c.config.ClaudeBin = claudeBin
+	}
+	if defaultCWD != "" {
+		c.config.DefaultCWD = defaultCWD
+	}
+	c.config.AllowedTools = allowedTools
+	c.config.DangerMode = dangerMode
+}
+
 func NewAskCommand(cfg AskConfig) *AskCommand {
 	return &AskCommand{config: cfg}
 }

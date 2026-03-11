@@ -118,6 +118,7 @@ func runBot(configPath, logDir string) {
 	replier := NewReplier(larkClient)
 	sessionMgr := NewSessionManager(cfg)
 	router := NewRouter()
+	hookServer := NewHookServer(cfg.HookPort, replier, cfg.NotifyChatID)
 
 	// 注册命令
 	helpCmd := commands.NewHelpCommand()
@@ -128,19 +129,38 @@ func runBot(configPath, logDir string) {
 		DangerMode:   cfg.ClaudeDangerMode,
 		ResolveCWD:   cfg.ResolveCWD,
 	})
+	shellCmd := commands.NewShellCommand(cfg.ShellWhitelist)
 
 	router.Register(askCmd)
 	router.Register(commands.NewSessionCommand(sessionMgr))
 	router.Register(commands.NewSendCommand(sessionMgr))
-	router.Register(commands.NewShellCommand(cfg.ShellWhitelist))
+	router.Register(shellCmd)
 	router.Register(commands.NewStatusCommand())
 	router.Register(commands.NewDangerCommand(askCmd))
+
+	// 热重载
+	reloadFn := func() (string, error) {
+		newCfg, err := LoadConfig(configPath)
+		if err != nil {
+			return "", fmt.Errorf("读取配置失败: %w", err)
+		}
+		// 更新各组件（app_id/app_secret/hook_port 需要重启）
+		cfg.AllowedUsers = newCfg.AllowedUsers
+		cfg.AllowedChats = newCfg.AllowedChats
+		cfg.Projects = newCfg.Projects
+		cfg.LogLevel = newCfg.LogLevel
+		askCmd.UpdateConfig(newCfg.ClaudeBin, newCfg.DefaultCWD, newCfg.ClaudeAllowedTools, newCfg.ClaudeDangerMode)
+		shellCmd.SetWhitelist(newCfg.ShellWhitelist)
+		hookServer.SetDefaultChatID(newCfg.NotifyChatID)
+		log.Println("配置已热重载")
+		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、Shell 白名单、通知目标\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
+	}
+	router.Register(commands.NewReloadCommand(reloadFn))
 	router.Register(helpCmd)
 
 	helpCmd.SetCommands(router.AllCommands())
 
 	// 启动 Hook HTTP 服务
-	hookServer := NewHookServer(cfg.HookPort, replier, cfg.NotifyChatID)
 	hookServer.Start()
 
 	// 创建飞书事件处理器
@@ -162,15 +182,19 @@ func runBot(configPath, logDir string) {
 	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	go func() {
-		<-sigCh
-		log.Println("正在关闭...")
-		cancel()
-		// 给 WebSocket 2 秒优雅退出，之后强制退出
-		time.Sleep(2 * time.Second)
-		os.Exit(0)
+		for sig := range sigCh {
+			if sig == syscall.SIGHUP {
+				reloadFn()
+				continue
+			}
+			log.Println("正在关闭...")
+			cancel()
+			time.Sleep(2 * time.Second)
+			os.Exit(0)
+		}
 	}()
 
 	// 启动

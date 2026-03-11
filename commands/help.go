@@ -60,6 +60,7 @@ func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMet
 	sb.WriteString("🛠 工具\n")
 	sb.WriteString("  /shell <命令>              执行白名单命令\n")
 	sb.WriteString("  /danger on|off             切换权限绕过模式\n")
+	sb.WriteString("  /reload                    热重载配置文件\n")
 	sb.WriteString("  /status                    查看系统状态\n")
 	sb.WriteString("  /help [命令]               帮助信息\n\n")
 

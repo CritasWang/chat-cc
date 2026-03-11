@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
 type ShellCommand struct {
+	mu        sync.RWMutex
 	whitelist []string
 }
 
@@ -17,11 +19,24 @@ func NewShellCommand(whitelist []string) *ShellCommand {
 	return &ShellCommand{whitelist: whitelist}
 }
 
+// SetWhitelist 热更新白名单
+func (c *ShellCommand) SetWhitelist(whitelist []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.whitelist = whitelist
+}
+
+func (c *ShellCommand) getWhitelist() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.whitelist
+}
+
 func (c *ShellCommand) Name() string        { return "shell" }
 func (c *ShellCommand) Aliases() []string    { return []string{"sh"} }
 func (c *ShellCommand) Description() string  { return "执行白名单内的 shell 命令" }
 func (c *ShellCommand) Usage() string {
-	cmds := strings.Join(c.whitelist, "\n  ")
+	cmds := strings.Join(c.getWhitelist(), "\n  ")
 	return fmt.Sprintf("/shell <命令>\n\n允许的命令:\n  %s", cmds)
 }
 
@@ -71,7 +86,7 @@ func (c *ShellCommand) Execute(ctx context.Context, args string, meta *MessageMe
 }
 
 func (c *ShellCommand) isAllowed(cmd string) bool {
-	for _, prefix := range c.whitelist {
+	for _, prefix := range c.getWhitelist() {
 		if strings.HasPrefix(cmd, prefix) {
 			return true
 		}
