@@ -41,16 +41,39 @@ func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMet
 		return fmt.Sprintf("未知命令: %s", target), nil
 	}
 
-	// 列出所有命令
+	// 完整命令列表
 	var sb strings.Builder
-	sb.WriteString("📋 可用命令:\n\n")
-	for _, cmd := range c.commands {
-		aliases := ""
-		if len(cmd.Aliases()) > 0 {
-			aliases = fmt.Sprintf(" (/%s)", strings.Join(cmd.Aliases(), ", /"))
-		}
-		sb.WriteString(fmt.Sprintf("  /%s%s — %s\n", cmd.Name(), aliases, cmd.Description()))
-	}
-	sb.WriteString("\n输入 /help <命令名> 查看详细用法")
+	sb.WriteString("📋 飞书机器人命令列表\n")
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━\n\n")
+
+	sb.WriteString("🤖 Claude Code\n")
+	sb.WriteString("  /ask <提示词>              无状态问答\n")
+	sb.WriteString("  /ask --cwd <目录> <提示词>  指定工作目录\n")
+	sb.WriteString("  /ask @别名 <提示词>         用项目别名\n\n")
+
+	sb.WriteString("💬 持久会话\n")
+	sb.WriteString("  /session start [目录]      启动 tmux 会话\n")
+	sb.WriteString("  /s <消息>                  发送到活跃会话\n")
+	sb.WriteString("  /session stop              关闭会话\n")
+	sb.WriteString("  /session status            查看会话状态\n\n")
+
+	sb.WriteString("🛠 工具\n")
+	sb.WriteString("  /shell <命令>              执行白名单命令\n")
+	sb.WriteString("  /danger on|off             切换权限绕过模式\n")
+	sb.WriteString("  /status                    查看系统状态\n")
+	sb.WriteString("  /help [命令]               帮助信息\n\n")
+
+	sb.WriteString("💡 示例\n")
+	sb.WriteString("  /ask 帮我看看有什么文件\n")
+	sb.WriteString("  /ask @server 看看迁移方案\n")
+	sb.WriteString("  /session start /path/to/project\n")
+	sb.WriteString("  /s 帮我重构这个函数\n")
+	sb.WriteString("  /shell docker ps\n\n")
+
+	sb.WriteString("直接发送消息（无 / 前缀）:\n")
+	sb.WriteString("  有活跃会话 → 发送到会话\n")
+	sb.WriteString("  无活跃会话 → 等同 /ask\n\n")
+
+	sb.WriteString("输入 /help <命令名> 查看详细用法")
 	return sb.String(), nil
 }
