@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,21 @@ type AskConfig struct {
 
 type AskCommand struct {
 	config AskConfig
+	mu     sync.RWMutex
+}
+
+// SetDangerMode 运行时切换 danger 模式
+func (c *AskCommand) SetDangerMode(on bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.config.DangerMode = on
+}
+
+// IsDangerMode 查询当前 danger 模式状态
+func (c *AskCommand) IsDangerMode() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.config.DangerMode
 }
 
 func NewAskCommand(cfg AskConfig) *AskCommand {
@@ -50,7 +66,7 @@ func (c *AskCommand) Execute(ctx context.Context, args string, meta *MessageMeta
 	cmdArgs := []string{"-p", prompt, "--output-format", "text"}
 
 	// 添加工具权限
-	if c.config.DangerMode {
+	if c.IsDangerMode() {
 		cmdArgs = append(cmdArgs, "--dangerously-skip-permissions")
 	} else {
 		for _, tool := range c.config.AllowedTools {

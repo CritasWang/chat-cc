@@ -75,6 +75,7 @@ go build -o feishu-bot .
 | `/s <消息>` | 发送到活跃会话 | `/s 帮我重构这个函数` |
 | `/session stop` | 关闭持久会话 | `/session stop` |
 | `/shell <命令>` | 执行白名单 shell 命令 | `/shell docker ps` |
+| `/danger on\|off` | 切换 Claude Code 权限绕过模式 | `/danger on` |
 | `/status` | 查看系统状态 | `/status` |
 | `/help [命令]` | 帮助信息 | `/help ask` |
 

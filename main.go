@@ -120,18 +120,20 @@ func runBot(configPath, logDir string) {
 
 	// 注册命令
 	helpCmd := commands.NewHelpCommand()
-
-	router.Register(commands.NewAskCommand(commands.AskConfig{
+	askCmd := commands.NewAskCommand(commands.AskConfig{
 		ClaudeBin:    cfg.ClaudeBin,
 		DefaultCWD:   cfg.DefaultCWD,
 		AllowedTools: cfg.ClaudeAllowedTools,
 		DangerMode:   cfg.ClaudeDangerMode,
 		ResolveCWD:   cfg.ResolveCWD,
-	}))
+	})
+
+	router.Register(askCmd)
 	router.Register(commands.NewSessionCommand(sessionMgr))
 	router.Register(commands.NewSendCommand(sessionMgr))
 	router.Register(commands.NewShellCommand(cfg.ShellWhitelist))
 	router.Register(commands.NewStatusCommand())
+	router.Register(commands.NewDangerCommand(askCmd))
 	router.Register(helpCmd)
 
 	helpCmd.SetCommands(router.AllCommands())
