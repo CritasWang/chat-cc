@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"feishu-bot/commands"
 )
 
 // Session 表示一个 tmux 中运行的 Claude Code 会话
@@ -159,6 +161,75 @@ func (sm *SessionManager) ListSessions() []*Session {
 		}
 	}
 	return result
+}
+
+// ListAllSessions 列出所有活跃会话（返回副本供命令使用）
+func (sm *SessionManager) ListAllSessions() []commands.SessionInfo {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var result []commands.SessionInfo
+	for _, s := range sm.sessions {
+		if s.Active {
+			result = append(result, commands.SessionInfo{
+				Name:      s.Name,
+				CWD:       s.CWD,
+				CreatedAt: s.CreatedAt,
+				Active:    s.Active,
+			})
+		}
+	}
+	return result
+}
+
+// GetSessionByKey 获取指定 key 的会话信息（供命令使用）
+func (sm *SessionManager) GetSessionByKey(key string) (commands.SessionInfo, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	s, ok := sm.sessions[key]
+	if !ok || !s.Active {
+		return commands.SessionInfo{}, false
+	}
+
+	return commands.SessionInfo{
+		Name:      s.Name,
+		CWD:       s.CWD,
+		CreatedAt: s.CreatedAt,
+		Active:    s.Active,
+	}, true
+}
+
+// KillByName 通过会话名称终止会话
+func (sm *SessionManager) KillByName(name string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// 查找对应的会话
+	var targetKey string
+	var targetSession *Session
+	for key, s := range sm.sessions {
+		if s.Name == name && s.Active {
+			targetKey = key
+			targetSession = s
+			break
+		}
+	}
+
+	if targetSession == nil {
+		return fmt.Errorf("未找到名为 %s 的活跃会话", name)
+	}
+
+	// 先发 exit，再 kill
+	exec.Command("tmux", "send-keys", "-t", targetSession.Name, "exit", "Enter").Run()
+	time.Sleep(500 * time.Millisecond)
+	exec.Command("tmux", "kill-session", "-t", targetSession.Name).Run()
+
+	// 标记为非活跃并删除
+	targetSession.Active = false
+	delete(sm.sessions, targetKey)
+
+	return nil
 }
 
 // capturePane 捕获 tmux pane 内容

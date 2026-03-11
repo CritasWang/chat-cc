@@ -19,14 +19,6 @@ type SessionManagerIface interface {
 	ListSessions() []SessionInfo
 }
 
-// SessionInfo 会话信息
-type SessionInfo struct {
-	Name      string
-	CWD       string
-	CreatedAt time.Time
-	Active    bool
-}
-
 type StatusCommand struct {
 	config         ConfigIface
 	sessionManager SessionManagerIface
@@ -103,20 +95,4 @@ func (c *StatusCommand) Execute(ctx context.Context, args string, meta *MessageM
 	sb.WriteString(fmt.Sprintf("\n⏱️ 查询时间: %s", time.Now().Format("2006-01-02 15:04:05")))
 
 	return sb.String(), nil
-}
-
-// formatDuration 格式化时长为易读格式
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%.0f秒", d.Seconds())
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%.0f分钟", d.Minutes())
-	}
-	hours := int(d.Hours())
-	minutes := int(d.Minutes()) % 60
-	if minutes > 0 {
-		return fmt.Sprintf("%d小时%d分钟", hours, minutes)
-	}
-	return fmt.Sprintf("%d小时", hours)
 }

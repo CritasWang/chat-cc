@@ -17,7 +17,7 @@ import (
 	"feishu-bot/commands"
 )
 
-// sessionManagerAdapter 适配器，将 SessionManager 转换为 commands.SessionManagerIface
+// sessionManagerAdapter 适配器，将 SessionManager 转换为 commands.SessionManagerIface（用于 status 命令）
 type sessionManagerAdapter struct {
 	sm *SessionManager
 }
@@ -34,6 +34,35 @@ func (a *sessionManagerAdapter) ListSessions() []commands.SessionInfo {
 		})
 	}
 	return result
+}
+
+// sessionCommandAdapter 适配器，将 SessionManager 转换为 commands.SessionIface（用于 session 命令）
+type sessionCommandAdapter struct {
+	sm *SessionManager
+}
+
+func (a *sessionCommandAdapter) Start(key, cwd string) error {
+	return a.sm.Start(key, cwd)
+}
+
+func (a *sessionCommandAdapter) Send(key, message string) (string, error) {
+	return a.sm.Send(key, message)
+}
+
+func (a *sessionCommandAdapter) Stop(key string) error {
+	return a.sm.Stop(key)
+}
+
+func (a *sessionCommandAdapter) GetSession(key string) (commands.SessionInfo, bool) {
+	return a.sm.GetSessionByKey(key)
+}
+
+func (a *sessionCommandAdapter) ListAllSessions() []commands.SessionInfo {
+	return a.sm.ListAllSessions()
+}
+
+func (a *sessionCommandAdapter) KillByName(name string) error {
+	return a.sm.KillByName(name)
 }
 
 func main() {
@@ -160,9 +189,12 @@ func runBot(configPath, logDir string) {
 	})
 	shellCmd := commands.NewShellCommand(cfg.ShellWhitelist)
 
+	// 创建会话命令适配器
+	sessionCmdAdapter := &sessionCommandAdapter{sm: sessionMgr}
+
 	router.Register(askCmd)
-	router.Register(commands.NewSessionCommand(sessionMgr))
-	router.Register(commands.NewSendCommand(sessionMgr))
+	router.Register(commands.NewSessionCommand(sessionCmdAdapter))
+	router.Register(commands.NewSendCommand(sessionCmdAdapter))
 	router.Register(shellCmd)
 	router.Register(commands.NewStatusCommand(cfg, sessionAdapter))
 	router.Register(commands.NewProjectCommand(cfg))

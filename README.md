@@ -72,8 +72,11 @@ go build -o feishu-bot .
 | `/ask --cwd <目录> <提示词>` | 指定工作目录 | `/ask --cwd /path/to/project 分析结构` |
 | `/ask @别名 <提示词>` | 用项目别名 | `/ask @server 看看迁移方案` |
 | `/session start [目录]` | 启动 tmux 持久会话 | `/session start /path/to/project` |
+| `/session status` | 查看当前会话详情 | `/session status` |
+| `/session list` | 列出所有活跃会话 | `/session list` |
+| `/session kill <会话名>` | 终止指定会话 | `/session kill cc-chat-xxx` |
+| `/session stop` | 关闭当前会话 | `/session stop` |
 | `/s <消息>` | 发送到活跃会话 | `/s 帮我重构这个函数` |
-| `/session stop` | 关闭持久会话 | `/session stop` |
 | `/shell <命令>` | 执行白名单 shell 命令 | `/shell docker ps` |
 | `/project` 或 `/p` | 查看已配置的项目别名 | `/project` |
 | `/status` | 查看系统状态和活跃会话 | `/status` |
@@ -126,6 +129,13 @@ max_chunk_size: 3500    # 长消息分块大小（默认 3500 字符）
 本项目已修复嵌套 Claude Code 会话问题。系统会自动过滤可能导致嵌套会话检测的环境变量（如 `CLAUDECODE`、`ANTHROPIC_*` 等），确保在 Claude Code 环境中也能正常启动子进程。
 
 ### 状态查询和项目管理
+
+**会话管理** (`/session`):
+- `/session start [目录]` - 启动新的 Claude Code 持久会话
+- `/session status` - 查看当前会话的详细信息（会话名、工作目录、创建时间、运行时间、状态）
+- `/session list` - 列出所有活跃的会话及其工作目录和运行时间
+- `/session kill <会话名>` - 终止指定名称的会话（通过 `/session list` 查看会话名）
+- `/session stop` - 关闭当前会话
 
 **查看系统状态** (`/status`):
 - 显示系统信息（OS、架构、运行时间）
