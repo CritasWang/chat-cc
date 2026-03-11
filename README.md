@@ -75,9 +75,10 @@ go build -o feishu-bot .
 | `/s <消息>` | 发送到活跃会话 | `/s 帮我重构这个函数` |
 | `/session stop` | 关闭持久会话 | `/session stop` |
 | `/shell <命令>` | 执行白名单 shell 命令 | `/shell docker ps` |
+| `/project` 或 `/p` | 查看已配置的项目别名 | `/project` |
+| `/status` | 查看系统状态和活跃会话 | `/status` |
 | `/danger on\|off` | 切换 Claude Code 权限绕过模式 | `/danger on` |
 | `/reload` | 热重载配置文件 | `/reload` |
-| `/status` | 查看系统状态 | `/status` |
 | `/help [命令]` | 帮助信息 | `/help ask` |
 
 **非命令消息**: 如有活跃 tmux 会话则发送到会话，否则等同 `/ask`。
@@ -123,6 +124,33 @@ max_chunk_size: 3500    # 长消息分块大小（默认 3500 字符）
 ### 嵌套会话问题
 
 本项目已修复嵌套 Claude Code 会话问题。系统会自动过滤可能导致嵌套会话检测的环境变量（如 `CLAUDECODE`、`ANTHROPIC_*` 等），确保在 Claude Code 环境中也能正常启动子进程。
+
+### 状态查询和项目管理
+
+**查看系统状态** (`/status`):
+- 显示系统信息（OS、架构、运行时间）
+- 显示默认工作目录
+- 显示活跃的 Claude Code 会话及其工作目录和运行时间
+- 显示 tmux 会话列表
+- 显示 Claude Code 版本信息
+
+**查看项目列表** (`/project` 或 `/p`):
+- 显示所有配置的项目别名及其对应目录
+- 提供项目别名的使用示例
+
+在 `config.yaml` 中配置项目：
+```yaml
+projects:
+  server: "/Volumes/data/sources/server_migration"
+  devops: "/Volumes/data/sources/devops"
+  webapp: "/path/to/webapp"
+```
+
+使用项目别名：
+```
+/ask @server 分析最新的代码变更
+/session start @webapp
+```
 
 ## Claude Code Hooks 集成
 

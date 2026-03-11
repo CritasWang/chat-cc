@@ -105,3 +105,13 @@ func (c *Config) ResolveCWD(input string) string {
 	}
 	return input
 }
+
+// GetDefaultCWD 获取默认工作目录
+func (c *Config) GetDefaultCWD() string {
+	return c.DefaultCWD
+}
+
+// GetProjects 获取项目别名映射
+func (c *Config) GetProjects() map[string]string {
+	return c.Projects
+}

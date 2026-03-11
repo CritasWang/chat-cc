@@ -17,6 +17,25 @@ import (
 	"feishu-bot/commands"
 )
 
+// sessionManagerAdapter 适配器，将 SessionManager 转换为 commands.SessionManagerIface
+type sessionManagerAdapter struct {
+	sm *SessionManager
+}
+
+func (a *sessionManagerAdapter) ListSessions() []commands.SessionInfo {
+	sessions := a.sm.ListSessions()
+	result := make([]commands.SessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		result = append(result, commands.SessionInfo{
+			Name:      s.Name,
+			CWD:       s.CWD,
+			CreatedAt: s.CreatedAt,
+			Active:    s.Active,
+		})
+	}
+	return result
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -126,6 +145,9 @@ func runBot(configPath, logDir string) {
 	router := NewRouter()
 	hookServer := NewHookServer(cfg.HookPort, replier, cfg.NotifyChatID)
 
+	// 创建会话管理器适配器
+	sessionAdapter := &sessionManagerAdapter{sm: sessionMgr}
+
 	// 注册命令
 	helpCmd := commands.NewHelpCommand()
 	askCmd := commands.NewAskCommand(commands.AskConfig{
@@ -142,7 +164,8 @@ func runBot(configPath, logDir string) {
 	router.Register(commands.NewSessionCommand(sessionMgr))
 	router.Register(commands.NewSendCommand(sessionMgr))
 	router.Register(shellCmd)
-	router.Register(commands.NewStatusCommand())
+	router.Register(commands.NewStatusCommand(cfg, sessionAdapter))
+	router.Register(commands.NewProjectCommand(cfg))
 	router.Register(commands.NewDangerCommand(askCmd))
 
 	// 热重载
