@@ -43,7 +43,7 @@ func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMet
 
 	// 完整命令列表
 	var sb strings.Builder
-	sb.WriteString("📋 飞书机器人命令列表\n")
+	sb.WriteString("📋 ChatCC 命令列表\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━\n\n")
 
 	sb.WriteString("🤖 Claude Code\n")
@@ -54,14 +54,17 @@ func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMet
 	sb.WriteString("💬 持久会话\n")
 	sb.WriteString("  /session start [目录]      启动 tmux 会话\n")
 	sb.WriteString("  /s <消息>                  发送到活跃会话\n")
-	sb.WriteString("  /session stop              关闭会话\n")
-	sb.WriteString("  /session status            查看会话状态\n\n")
+	sb.WriteString("  /session status            查看当前会话详情\n")
+	sb.WriteString("  /session list              列出所有活跃会话\n")
+	sb.WriteString("  /session kill <会话名>     终止指定会话\n")
+	sb.WriteString("  /session stop              关闭当前会话\n\n")
 
 	sb.WriteString("🛠 工具\n")
 	sb.WriteString("  /shell <命令>              执行白名单命令\n")
+	sb.WriteString("  /project 或 /p             查看项目别名\n")
 	sb.WriteString("  /danger on|off             切换权限绕过模式\n")
-	sb.WriteString("  /reload                    热重载配置文件\n")
 	sb.WriteString("  /status                    查看系统状态\n")
+	sb.WriteString("  /reload                    热重载配置文件\n")
 	sb.WriteString("  /help [命令]               帮助信息\n\n")
 
 	sb.WriteString("💡 示例\n")

@@ -43,7 +43,7 @@ func (sm *SessionManager) Start(key, cwd string) error {
 		return fmt.Errorf("会话 %s 已存在，请先 /session stop", s.Name)
 	}
 
-	name := fmt.Sprintf("feishu-claude-%s", sanitizeName(key))
+	name := fmt.Sprintf("cc-%s", sanitizeName(key))
 	resolvedCWD := sm.config.ResolveCWD(cwd)
 
 	// 构建 claude 命令

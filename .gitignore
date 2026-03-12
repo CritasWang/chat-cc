@@ -4,3 +4,4 @@ config.local.yaml
 .env
 logs/
 *.pid
+.omc/
