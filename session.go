@@ -22,24 +22,15 @@ type Session struct {
 
 // SessionManager 管理多个 tmux Claude Code 会话
 type SessionManager struct {
-	mu                sync.RWMutex
-	sessions          map[string]*Session // key: chatID 或 userID
-	config            *Config
-	interactivePrompt chan *InteractivePrompt // 交互提示通道
-}
-
-// InteractivePrompt 表示检测到的交互式提示
-type InteractivePrompt struct {
-	SessionKey string
-	Prompt     string
-	Timestamp  time.Time
+	mu       sync.RWMutex
+	sessions map[string]*Session // key: chatID 或 userID
+	config   *Config
 }
 
 func NewSessionManager(cfg *Config) *SessionManager {
 	return &SessionManager{
-		sessions:          make(map[string]*Session),
-		config:            cfg,
-		interactivePrompt: make(chan *InteractivePrompt, 10),
+		sessions: make(map[string]*Session),
+		config:   cfg,
 	}
 }
 
@@ -69,7 +60,7 @@ func (sm *SessionManager) Start(key, cwd string) error {
 
 	// 过滤环境变量，防止嵌套 Claude Code 会话错误
 	// 移除 CLAUDECODE 等可能触发嵌套会话检测的环境变量
-	cmd.Env = filterEnvForSession(os.Environ())
+	cmd.Env = commands.FilterEnvForClaudeCode(os.Environ())
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("创建 tmux 会话失败: %w", err)
@@ -203,31 +194,31 @@ func (sm *SessionManager) GetSessionByKey(key string) (commands.SessionInfo, boo
 // KillByName 通过会话名称终止会话
 func (sm *SessionManager) KillByName(name string) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	// 查找对应的会话
 	var targetKey string
-	var targetSession *Session
+	var targetName string
 	for key, s := range sm.sessions {
 		if s.Name == name && s.Active {
 			targetKey = key
-			targetSession = s
+			targetName = s.Name
 			break
 		}
 	}
-
-	if targetSession == nil {
+	if targetKey == "" {
+		sm.mu.Unlock()
 		return fmt.Errorf("未找到名为 %s 的活跃会话", name)
 	}
 
-	// 先发 exit，再 kill
-	exec.Command("tmux", "send-keys", "-t", targetSession.Name, "exit", "Enter").Run()
-	time.Sleep(500 * time.Millisecond)
-	exec.Command("tmux", "kill-session", "-t", targetSession.Name).Run()
-
-	// 标记为非活跃并删除
-	targetSession.Active = false
+	// 持锁期间标记非活跃并从 map 中删除
+	sm.sessions[targetKey].Active = false
 	delete(sm.sessions, targetKey)
+	sm.mu.Unlock()
+
+	// 锁外执行 tmux 清理（避免持锁期间 sleep）
+	exec.Command("tmux", "send-keys", "-t", targetName, "exit", "Enter").Run()
+	time.Sleep(500 * time.Millisecond)
+	exec.Command("tmux", "kill-session", "-t", targetName).Run()
 
 	return nil
 }
@@ -257,10 +248,6 @@ func (sm *SessionManager) waitForResponse(name string, beforeLines int) (string,
 	}
 	maxWait := timeoutMinutes * 60 // 转换为秒
 
-	// 进度报告阈值（每 5 分钟报告一次进度）
-	progressInterval := 300 // 5 分钟 = 300 秒
-	lastProgressReport := 0
-
 	for i := 0; i < maxWait*2; i++ { // 每 500ms 检查一次
 		content, err := sm.capturePane(name)
 		if err != nil {
@@ -284,14 +271,6 @@ func (sm *SessionManager) waitForResponse(name string, beforeLines int) (string,
 		} else {
 			stableCount = 0
 			lastContent = content
-		}
-
-		// 进度报告：每 5 分钟提示一次任务仍在执行
-		elapsedSeconds := i / 2 // 因为每 500ms 检查一次
-		if elapsedSeconds > 0 && elapsedSeconds%progressInterval == 0 && elapsedSeconds != lastProgressReport {
-			lastProgressReport = elapsedSeconds
-			// 注意：这里只是记录日志，实际进度报告需要通过回调机制
-			// 可以考虑在未来版本中通过 hook 回调发送进度通知
 		}
 
 		time.Sleep(500 * time.Millisecond)
@@ -337,34 +316,6 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// filterEnvForSession 过滤环境变量，移除可能导致嵌套会话检测的变量
-// 这可以防止 tmux 会话中的 Claude Code 检测到嵌套会话
-func filterEnvForSession(parentEnv []string) []string {
-	filtered := make([]string, 0, len(parentEnv))
-
-	// 需要过滤的环境变量前缀/名称（防止嵌套会话检测）
-	blockedPrefixes := []string{
-		"CLAUDECODE",     // Claude Code 会话标识
-		"ANTHROPIC_",     // Anthropic 相关的会话变量
-		"CLAUDE_SESSION", // Claude 会话相关
-		"AGENT_SDK_",     // Agent SDK 相关
-	}
-
-	for _, env := range parentEnv {
-		blocked := false
-		for _, prefix := range blockedPrefixes {
-			if strings.HasPrefix(env, prefix) {
-				blocked = true
-				break
-			}
-		}
-		if !blocked {
-			filtered = append(filtered, env)
-		}
-	}
-
-	return filtered
-}
 
 // isInteractivePrompt 检测输出是否包含交互式提示
 // 检测常见的交互提示模式，如 y/n 问题、确认提示等
@@ -387,23 +338,18 @@ func isInteractivePrompt(content string) bool {
 	lastLines := strings.Join(lines[len(lines)-checkLines:], "\n")
 	lastLinesLower := strings.ToLower(lastLines)
 
-	// 常见的交互式提示模式
+	// 常见的交互式提示模式（仅保留无歧义的严格模式）
 	interactivePatterns := []string{
 		"(y/n)",
 		"[y/n]",
 		"(yes/no)",
 		"[yes/no]",
-		"continue?",
-		"proceed?",
-		"confirm?",
+		"continue? [y/n",
+		"proceed? [y/n",
 		"are you sure?",
-		"press enter",
-		"按回车",
-		"确认",
-		"是否继续",
+		"press enter to continue",
 		"y or n",
 		"yes or no",
-		"> ", // 命令提示符
 	}
 
 	for _, pattern := range interactivePatterns {

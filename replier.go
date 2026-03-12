@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
+	"unicode/utf8"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -109,7 +111,7 @@ func (r *Replier) ReplyChunked(messageID, text string, maxChunkSize int) error {
 	}
 
 	// 如果消息短于限制，直接发送
-	if len(text) <= maxChunkSize {
+	if utf8.RuneCountInString(text) <= maxChunkSize {
 		_, err := r.Reply(messageID, text)
 		return err
 	}
@@ -134,9 +136,9 @@ func (r *Replier) ReplyChunked(messageID, text string, maxChunkSize int) error {
 	return nil
 }
 
-// splitIntoChunks 智能分块：优先在段落、句子边界分块
+// splitIntoChunks 智能分块：优先在段落、句子边界分块，UTF-8 安全
 func splitIntoChunks(text string, maxSize int) []string {
-	if len(text) <= maxSize {
+	if utf8.RuneCountInString(text) <= maxSize {
 		return []string{text}
 	}
 
@@ -144,67 +146,39 @@ func splitIntoChunks(text string, maxSize int) []string {
 	remaining := text
 
 	for len(remaining) > 0 {
-		if len(remaining) <= maxSize {
+		if utf8.RuneCountInString(remaining) <= maxSize {
 			chunks = append(chunks, remaining)
 			break
 		}
 
-		// 尝试在 maxSize 范围内找最佳分割点
-		splitPos := maxSize
+		// Convert to runes to find safe split position
+		runes := []rune(remaining)
+		// Start from maxSize rune position
+		splitPos := string(runes[:maxSize])
+		byteLen := len(splitPos)
 
-		// 1. 优先在段落边界（双换行）分割
-		chunk := remaining[:maxSize]
-		if pos := findLastOccurrence(chunk, "\n\n"); pos > maxSize/2 {
-			splitPos = pos + 2
-		} else if pos := findLastOccurrence(chunk, "\n"); pos > maxSize/2 {
-			// 2. 其次在单换行分割
-			splitPos = pos + 1
-		} else if pos := findLastOccurrence(chunk, "。"); pos > maxSize/2 {
-			// 3. 中文句号
-			splitPos = pos + len("。")
-		} else if pos := findLastOccurrence(chunk, ". "); pos > maxSize/2 {
-			// 4. 英文句号+空格
-			splitPos = pos + 2
-		} else if pos := findLastOccurrence(chunk, "，"); pos > maxSize/2 {
-			// 5. 中文逗号
-			splitPos = pos + len("，")
-		} else if pos := findLastOccurrence(chunk, ", "); pos > maxSize/2 {
-			// 6. 英文逗号+空格
-			splitPos = pos + 2
-		} else if pos := findLastOccurrence(chunk, " "); pos > maxSize/2 {
-			// 7. 最后尝试空格
-			splitPos = pos + 1
+		// Try to find best split point within the chunk (working with string, all positions are byte-safe because we search for known substrings)
+		chunk := splitPos
+		if pos := strings.LastIndex(chunk, "\n\n"); pos > byteLen/2 {
+			byteLen = pos + 2
+		} else if pos := strings.LastIndex(chunk, "\n"); pos > byteLen/2 {
+			byteLen = pos + 1
+		} else if pos := strings.LastIndex(chunk, "。"); pos > byteLen/2 {
+			byteLen = pos + len("。")
+		} else if pos := strings.LastIndex(chunk, ". "); pos > byteLen/2 {
+			byteLen = pos + 2
+		} else if pos := strings.LastIndex(chunk, "，"); pos > byteLen/2 {
+			byteLen = pos + len("，")
+		} else if pos := strings.LastIndex(chunk, ", "); pos > byteLen/2 {
+			byteLen = pos + 2
+		} else if pos := strings.LastIndex(chunk, " "); pos > byteLen/2 {
+			byteLen = pos + 1
 		}
-		// 8. 如果都找不到，就在 maxSize 处硬切割
+		// If none found, byteLen stays at the rune-safe position
 
-		chunks = append(chunks, remaining[:splitPos])
-		remaining = remaining[splitPos:]
+		chunks = append(chunks, remaining[:byteLen])
+		remaining = remaining[byteLen:]
 	}
 
 	return chunks
-}
-
-// findLastOccurrence 查找字符串最后一次出现的位置
-func findLastOccurrence(s, substr string) int {
-	idx := -1
-	offset := 0
-	for {
-		pos := indexOf(s[offset:], substr)
-		if pos == -1 {
-			break
-		}
-		idx = offset + pos
-		offset = idx + len(substr)
-	}
-	return idx
-}
-
-// indexOf 返回子串在字符串中的位置，未找到返回 -1
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

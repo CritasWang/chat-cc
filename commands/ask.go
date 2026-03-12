@@ -65,17 +65,18 @@ func NewAskCommand(cfg AskConfig) *AskCommand {
 	return &AskCommand{config: cfg}
 }
 
-// filterEnvForClaudeCode 过滤环境变量，移除可能导致嵌套会话检测的变量
+// FilterEnvForClaudeCode 过滤环境变量，移除可能导致嵌套会话检测的变量
 // 这可以防止 "Claude Code cannot be launched inside another Claude Code session" 错误
-func filterEnvForClaudeCode(parentEnv []string) []string {
+func FilterEnvForClaudeCode(parentEnv []string) []string {
 	filtered := make([]string, 0, len(parentEnv))
 
 	// 需要过滤的环境变量前缀/名称（防止嵌套会话检测）
+	// 注意：不过滤 ANTHROPIC_ 前缀，避免移除 ANTHROPIC_API_KEY 等认证变量
 	blockedPrefixes := []string{
-		"CLAUDECODE",           // Claude Code 会话标识
-		"ANTHROPIC_",           // Anthropic 相关的会话变量
-		"CLAUDE_SESSION",       // Claude 会话相关
-		"AGENT_SDK_",          // Agent SDK 相关
+		"CLAUDECODE",    // Claude Code 会话标识（精确匹配）
+		"CLAUDE_CODE_",  // Claude Code 内部变量
+		"CLAUDE_SESSION", // Claude 会话相关
+		"AGENT_SDK_",    // Agent SDK 相关
 	}
 
 	for _, env := range parentEnv {
@@ -136,7 +137,7 @@ func (c *AskCommand) Execute(ctx context.Context, args string, meta *MessageMeta
 
 	// 过滤环境变量，防止嵌套 Claude Code 会话错误
 	// 移除 CLAUDECODE 等可能触发嵌套会话检测的环境变量
-	cmd.Env = filterEnvForClaudeCode(os.Environ())
+	cmd.Env = FilterEnvForClaudeCode(os.Environ())
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

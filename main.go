@@ -213,11 +213,12 @@ func runBot(configPath, logDir string) {
 		cfg.LogLevel = newCfg.LogLevel
 		cfg.ClaudeAskTimeout = newCfg.ClaudeAskTimeout
 		cfg.ClaudeSessionTimeout = newCfg.ClaudeSessionTimeout
+		cfg.MaxChunkSize = newCfg.MaxChunkSize
 		askCmd.UpdateConfig(newCfg.ClaudeBin, newCfg.DefaultCWD, newCfg.ClaudeAllowedTools, newCfg.ClaudeDangerMode, newCfg.ClaudeAskTimeout)
 		shellCmd.SetWhitelist(newCfg.ShellWhitelist)
 		hookServer.SetDefaultChatID(newCfg.NotifyChatID)
 		log.Println("配置已热重载")
-		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、Shell 白名单、通知目标\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
+		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、分块配置、Shell 白名单、通知目标\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
 	}
 	router.Register(commands.NewReloadCommand(reloadFn))
 	router.Register(helpCmd)
