@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
+	"unicode/utf8"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -99,4 +101,84 @@ func (r *Replier) SendToChat(chatID, text string) (string, error) {
 		msgID = *resp.Data.MessageId
 	}
 	return msgID, nil
+}
+
+// ReplyChunked 将长消息分块回复，避免消息截断
+// maxChunkSize: 每块最大字符数，默认 3500（为 4000 限制留有余量）
+func (r *Replier) ReplyChunked(messageID, text string, maxChunkSize int) error {
+	if maxChunkSize <= 0 {
+		maxChunkSize = 3500
+	}
+
+	// 如果消息短于限制，直接发送
+	if utf8.RuneCountInString(text) <= maxChunkSize {
+		_, err := r.Reply(messageID, text)
+		return err
+	}
+
+	// 分块发送
+	chunks := splitIntoChunks(text, maxChunkSize)
+	totalChunks := len(chunks)
+
+	for i, chunk := range chunks {
+		// 添加分块标识
+		chunkText := chunk
+		if totalChunks > 1 {
+			chunkText = fmt.Sprintf("[%d/%d]\n%s", i+1, totalChunks, chunk)
+		}
+
+		if _, err := r.Reply(messageID, chunkText); err != nil {
+			log.Printf("发送第 %d/%d 块消息失败: %v", i+1, totalChunks, err)
+			return err
+		}
+	}
+
+	return nil
+}
+
+// splitIntoChunks 智能分块：优先在段落、句子边界分块，UTF-8 安全
+func splitIntoChunks(text string, maxSize int) []string {
+	if utf8.RuneCountInString(text) <= maxSize {
+		return []string{text}
+	}
+
+	var chunks []string
+	remaining := text
+
+	for len(remaining) > 0 {
+		if utf8.RuneCountInString(remaining) <= maxSize {
+			chunks = append(chunks, remaining)
+			break
+		}
+
+		// Convert to runes to find safe split position
+		runes := []rune(remaining)
+		// Start from maxSize rune position
+		splitPos := string(runes[:maxSize])
+		byteLen := len(splitPos)
+
+		// Try to find best split point within the chunk (working with string, all positions are byte-safe because we search for known substrings)
+		chunk := splitPos
+		if pos := strings.LastIndex(chunk, "\n\n"); pos > byteLen/2 {
+			byteLen = pos + 2
+		} else if pos := strings.LastIndex(chunk, "\n"); pos > byteLen/2 {
+			byteLen = pos + 1
+		} else if pos := strings.LastIndex(chunk, "。"); pos > byteLen/2 {
+			byteLen = pos + len("。")
+		} else if pos := strings.LastIndex(chunk, ". "); pos > byteLen/2 {
+			byteLen = pos + 2
+		} else if pos := strings.LastIndex(chunk, "，"); pos > byteLen/2 {
+			byteLen = pos + len("，")
+		} else if pos := strings.LastIndex(chunk, ", "); pos > byteLen/2 {
+			byteLen = pos + 2
+		} else if pos := strings.LastIndex(chunk, " "); pos > byteLen/2 {
+			byteLen = pos + 1
+		}
+		// If none found, byteLen stays at the rune-safe position
+
+		chunks = append(chunks, remaining[:byteLen])
+		remaining = remaining[byteLen:]
+	}
+
+	return chunks
 }

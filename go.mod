@@ -1,4 +1,4 @@
-module feishu-bot
+module chatcc
 
 go 1.22
 

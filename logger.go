@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// DailyRotateWriter 日志写入 feishu-bot.log，跨天自动归档为 feishu-bot-YYYY-MM-DD.log.gz
+// DailyRotateWriter 日志写入 chatcc.log，跨天自动归档为 chatcc-YYYY-MM-DD.log.gz
 type DailyRotateWriter struct {
 	dir     string
 	prefix  string
@@ -80,7 +80,7 @@ func (w *DailyRotateWriter) rotateLocked() {
 		w.file = nil
 	}
 
-	// 归档: feishu-bot.log → feishu-bot-2026-03-11.log.gz
+	// 归档: chatcc.log → chatcc-2026-03-11.log.gz
 	archiveName := fmt.Sprintf("%s-%s.log", w.prefix, yesterday)
 	archivePath := filepath.Join(w.dir, archiveName)
 	gzPath := archivePath + ".gz"

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"context"
 
-	"feishu-bot/commands"
+	"chatcc/commands"
 )
 
 // Router 命令路由器

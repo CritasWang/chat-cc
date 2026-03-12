@@ -9,16 +9,32 @@ import (
 	"time"
 )
 
-type StatusCommand struct{}
+// ConfigIface 配置接口，用于获取配置信息
+type ConfigIface interface {
+	GetDefaultCWD() string
+}
 
-func NewStatusCommand() *StatusCommand {
-	return &StatusCommand{}
+// SessionManagerIface 会话管理器接口，用于获取会话信息
+type SessionManagerIface interface {
+	ListSessions() []SessionInfo
+}
+
+type StatusCommand struct {
+	config         ConfigIface
+	sessionManager SessionManagerIface
+}
+
+func NewStatusCommand(cfg ConfigIface, sm SessionManagerIface) *StatusCommand {
+	return &StatusCommand{
+		config:         cfg,
+		sessionManager: sm,
+	}
 }
 
 func (c *StatusCommand) Name() string        { return "status" }
-func (c *StatusCommand) Aliases() []string    { return nil }
-func (c *StatusCommand) Description() string  { return "查看本地服务和系统状态" }
-func (c *StatusCommand) Usage() string        { return `/status` }
+func (c *StatusCommand) Aliases() []string   { return nil }
+func (c *StatusCommand) Description() string { return "查看本地服务和系统状态" }
+func (c *StatusCommand) Usage() string       { return `/status` }
 
 func (c *StatusCommand) Execute(ctx context.Context, args string, meta *MessageMeta) (string, error) {
 	var sb strings.Builder
@@ -30,6 +46,29 @@ func (c *StatusCommand) Execute(ctx context.Context, args string, meta *MessageM
 	// uptime
 	if out, err := exec.Command("uptime").Output(); err == nil {
 		sb.WriteString(fmt.Sprintf("  Uptime: %s\n", strings.TrimSpace(string(out))))
+	}
+
+	// 当前工作目录
+	if c.config != nil {
+		sb.WriteString(fmt.Sprintf("\n📁 默认工作目录:\n  %s\n", c.config.GetDefaultCWD()))
+	}
+
+	// Claude Code 活跃会话
+	sb.WriteString("\n🔄 Claude Code 活跃会话:\n")
+	if c.sessionManager != nil {
+		sessions := c.sessionManager.ListSessions()
+		if len(sessions) > 0 {
+			for _, session := range sessions {
+				elapsed := time.Since(session.CreatedAt)
+				sb.WriteString(fmt.Sprintf("  • %s\n", session.Name))
+				sb.WriteString(fmt.Sprintf("    工作目录: %s\n", session.CWD))
+				sb.WriteString(fmt.Sprintf("    运行时间: %s\n", formatDuration(elapsed)))
+			}
+		} else {
+			sb.WriteString("  (无活跃会话)\n")
+		}
+	} else {
+		sb.WriteString("  (无会话管理器)\n")
 	}
 
 	// tmux 会话

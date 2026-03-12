@@ -2,11 +2,14 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"chatcc/commands"
 )
 
 // Session 表示一个 tmux 中运行的 Claude Code 会话
@@ -50,9 +53,14 @@ func (sm *SessionManager) Start(key, cwd string) error {
 	}
 
 	// 创建 tmux 会话
+	// 注意：通过 tmux 启动时，需要确保环境变量不会导致嵌套会话检测
 	cmd := exec.Command("tmux", "new-session", "-d", "-s", name,
 		"-c", resolvedCWD,
 		fmt.Sprintf("cd %s && %s", shellQuote(resolvedCWD), claudeCmd))
+
+	// 过滤环境变量，防止嵌套 Claude Code 会话错误
+	// 移除 CLAUDECODE 等可能触发嵌套会话检测的环境变量
+	cmd.Env = commands.FilterEnvForClaudeCode(os.Environ())
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("创建 tmux 会话失败: %w", err)
@@ -146,6 +154,75 @@ func (sm *SessionManager) ListSessions() []*Session {
 	return result
 }
 
+// ListAllSessions 列出所有活跃会话（返回副本供命令使用）
+func (sm *SessionManager) ListAllSessions() []commands.SessionInfo {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var result []commands.SessionInfo
+	for _, s := range sm.sessions {
+		if s.Active {
+			result = append(result, commands.SessionInfo{
+				Name:      s.Name,
+				CWD:       s.CWD,
+				CreatedAt: s.CreatedAt,
+				Active:    s.Active,
+			})
+		}
+	}
+	return result
+}
+
+// GetSessionByKey 获取指定 key 的会话信息（供命令使用）
+func (sm *SessionManager) GetSessionByKey(key string) (commands.SessionInfo, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	s, ok := sm.sessions[key]
+	if !ok || !s.Active {
+		return commands.SessionInfo{}, false
+	}
+
+	return commands.SessionInfo{
+		Name:      s.Name,
+		CWD:       s.CWD,
+		CreatedAt: s.CreatedAt,
+		Active:    s.Active,
+	}, true
+}
+
+// KillByName 通过会话名称终止会话
+func (sm *SessionManager) KillByName(name string) error {
+	sm.mu.Lock()
+
+	// 查找对应的会话
+	var targetKey string
+	var targetName string
+	for key, s := range sm.sessions {
+		if s.Name == name && s.Active {
+			targetKey = key
+			targetName = s.Name
+			break
+		}
+	}
+	if targetKey == "" {
+		sm.mu.Unlock()
+		return fmt.Errorf("未找到名为 %s 的活跃会话", name)
+	}
+
+	// 持锁期间标记非活跃并从 map 中删除
+	sm.sessions[targetKey].Active = false
+	delete(sm.sessions, targetKey)
+	sm.mu.Unlock()
+
+	// 锁外执行 tmux 清理（避免持锁期间 sleep）
+	exec.Command("tmux", "send-keys", "-t", targetName, "exit", "Enter").Run()
+	time.Sleep(500 * time.Millisecond)
+	exec.Command("tmux", "kill-session", "-t", targetName).Run()
+
+	return nil
+}
+
 // capturePane 捕获 tmux pane 内容
 func (sm *SessionManager) capturePane(name string) (string, error) {
 	cmd := exec.Command("tmux", "capture-pane", "-t", name, "-p", "-S", "-500")
@@ -163,12 +240,25 @@ func (sm *SessionManager) waitForResponse(name string, beforeLines int) (string,
 
 	var lastContent string
 	stableCount := 0
-	maxWait := 300 // 最长等待 300 秒 (5 分钟)
+
+	// 使用配置的超时时间（默认 50 分钟）
+	timeoutMinutes := sm.config.ClaudeSessionTimeout
+	if timeoutMinutes <= 0 {
+		timeoutMinutes = 50
+	}
+	maxWait := timeoutMinutes * 60 // 转换为秒
 
 	for i := 0; i < maxWait*2; i++ { // 每 500ms 检查一次
 		content, err := sm.capturePane(name)
 		if err != nil {
 			return "", fmt.Errorf("捕获输出失败: %w", err)
+		}
+
+		// 检测交互式提示
+		if isInteractivePrompt(content) {
+			newOutput := extractNewOutput(content, beforeLines)
+			// 返回带有交互提示标识的输出
+			return newOutput + "\n\n⚠️ 检测到交互式提示，Claude Code 正在等待输入。\n💡 请使用 /s 命令发送您的响应。", nil
 		}
 
 		if content == lastContent && content != "" {
@@ -188,9 +278,9 @@ func (sm *SessionManager) waitForResponse(name string, beforeLines int) (string,
 
 	// 超时，返回已有输出
 	if lastContent != "" {
-		return extractNewOutput(lastContent, beforeLines) + "\n⚠️ [输出可能不完整，已超时]", nil
+		return extractNewOutput(lastContent, beforeLines) + fmt.Sprintf("\n⚠️ [输出可能不完整，已超时 %d 分钟]", timeoutMinutes), nil
 	}
-	return "", fmt.Errorf("等待响应超时")
+	return "", fmt.Errorf("等待响应超时（%d 分钟）", timeoutMinutes)
 }
 
 // extractNewOutput 从 pane 内容中提取新增输出
@@ -225,3 +315,54 @@ func sanitizeName(s string) string {
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
+
+
+// isInteractivePrompt 检测输出是否包含交互式提示
+// 检测常见的交互提示模式，如 y/n 问题、确认提示等
+func isInteractivePrompt(content string) bool {
+	// 移除 ANSI 转义码
+	cleanContent := stripANSI(content)
+
+	// 获取最后几行（交互提示通常在末尾）
+	lines := strings.Split(cleanContent, "\n")
+	if len(lines) == 0 {
+		return false
+	}
+
+	// 检查最后 3 行
+	checkLines := 3
+	if len(lines) < checkLines {
+		checkLines = len(lines)
+	}
+
+	lastLines := strings.Join(lines[len(lines)-checkLines:], "\n")
+	lastLinesLower := strings.ToLower(lastLines)
+
+	// 常见的交互式提示模式（仅保留无歧义的严格模式）
+	interactivePatterns := []string{
+		"(y/n)",
+		"[y/n]",
+		"(yes/no)",
+		"[yes/no]",
+		"continue? [y/n",
+		"proceed? [y/n",
+		"are you sure?",
+		"press enter to continue",
+		"y or n",
+		"yes or no",
+	}
+
+	for _, pattern := range interactivePatterns {
+		if strings.Contains(lastLinesLower, pattern) {
+			// 额外检查：确保不是在代码块或输出中
+			// 如果最后一行很长（>100字符），可能是输出而非提示
+			lastLine := strings.TrimSpace(lines[len(lines)-1])
+			if len(lastLine) < 100 {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+

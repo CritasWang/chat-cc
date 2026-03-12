@@ -14,8 +14,56 @@ import (
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
-	"feishu-bot/commands"
+	"chatcc/commands"
 )
+
+// sessionManagerAdapter 适配器，将 SessionManager 转换为 commands.SessionManagerIface（用于 status 命令）
+type sessionManagerAdapter struct {
+	sm *SessionManager
+}
+
+func (a *sessionManagerAdapter) ListSessions() []commands.SessionInfo {
+	sessions := a.sm.ListSessions()
+	result := make([]commands.SessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		result = append(result, commands.SessionInfo{
+			Name:      s.Name,
+			CWD:       s.CWD,
+			CreatedAt: s.CreatedAt,
+			Active:    s.Active,
+		})
+	}
+	return result
+}
+
+// sessionCommandAdapter 适配器，将 SessionManager 转换为 commands.SessionIface（用于 session 命令）
+type sessionCommandAdapter struct {
+	sm *SessionManager
+}
+
+func (a *sessionCommandAdapter) Start(key, cwd string) error {
+	return a.sm.Start(key, cwd)
+}
+
+func (a *sessionCommandAdapter) Send(key, message string) (string, error) {
+	return a.sm.Send(key, message)
+}
+
+func (a *sessionCommandAdapter) Stop(key string) error {
+	return a.sm.Stop(key)
+}
+
+func (a *sessionCommandAdapter) GetSession(key string) (commands.SessionInfo, bool) {
+	return a.sm.GetSessionByKey(key)
+}
+
+func (a *sessionCommandAdapter) ListAllSessions() []commands.SessionInfo {
+	return a.sm.ListAllSessions()
+}
+
+func (a *sessionCommandAdapter) KillByName(name string) error {
+	return a.sm.KillByName(name)
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -67,7 +115,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println("用法: feishu-bot <命令> [选项]")
+	fmt.Println("用法: chatcc <命令> [选项]")
 	fmt.Println()
 	fmt.Println("命令:")
 	fmt.Println("  start     后台启动（日志写入 logs/ 目录）")
@@ -82,15 +130,15 @@ func printUsage() {
 	fmt.Println("  --config <path>   配置文件路径（默认: config.yaml）")
 	fmt.Println()
 	fmt.Println("示例:")
-	fmt.Println("  feishu-bot start --config config.local.yaml")
-	fmt.Println("  feishu-bot stop")
-	fmt.Println("  feishu-bot console --config config.local.yaml")
+	fmt.Println("  chatcc start --config config.local.yaml")
+	fmt.Println("  chatcc stop")
+	fmt.Println("  chatcc console --config config.local.yaml")
 }
 
 func runBot(configPath, logDir string) {
 	// 配置日志输出
 	if logDir != "" {
-		w, err := NewDailyRotateWriter(logDir, "feishu-bot")
+		w, err := NewDailyRotateWriter(logDir, "chatcc")
 		if err != nil {
 			log.Fatalf("初始化日志失败: %v", err)
 		}
@@ -126,22 +174,30 @@ func runBot(configPath, logDir string) {
 	router := NewRouter()
 	hookServer := NewHookServer(cfg.HookPort, replier, cfg.NotifyChatID)
 
+	// 创建会话管理器适配器
+	sessionAdapter := &sessionManagerAdapter{sm: sessionMgr}
+
 	// 注册命令
 	helpCmd := commands.NewHelpCommand()
 	askCmd := commands.NewAskCommand(commands.AskConfig{
-		ClaudeBin:    cfg.ClaudeBin,
-		DefaultCWD:   cfg.DefaultCWD,
-		AllowedTools: cfg.ClaudeAllowedTools,
-		DangerMode:   cfg.ClaudeDangerMode,
-		ResolveCWD:   cfg.ResolveCWD,
+		ClaudeBin:      cfg.ClaudeBin,
+		DefaultCWD:     cfg.DefaultCWD,
+		AllowedTools:   cfg.ClaudeAllowedTools,
+		DangerMode:     cfg.ClaudeDangerMode,
+		TimeoutMinutes: cfg.ClaudeAskTimeout,
+		ResolveCWD:     cfg.ResolveCWD,
 	})
 	shellCmd := commands.NewShellCommand(cfg.ShellWhitelist)
 
+	// 创建会话命令适配器
+	sessionCmdAdapter := &sessionCommandAdapter{sm: sessionMgr}
+
 	router.Register(askCmd)
-	router.Register(commands.NewSessionCommand(sessionMgr))
-	router.Register(commands.NewSendCommand(sessionMgr))
+	router.Register(commands.NewSessionCommand(sessionCmdAdapter))
+	router.Register(commands.NewSendCommand(sessionCmdAdapter))
 	router.Register(shellCmd)
-	router.Register(commands.NewStatusCommand())
+	router.Register(commands.NewStatusCommand(cfg, sessionAdapter))
+	router.Register(commands.NewProjectCommand(cfg))
 	router.Register(commands.NewDangerCommand(askCmd))
 
 	// 热重载
@@ -155,11 +211,14 @@ func runBot(configPath, logDir string) {
 		cfg.AllowedChats = newCfg.AllowedChats
 		cfg.Projects = newCfg.Projects
 		cfg.LogLevel = newCfg.LogLevel
-		askCmd.UpdateConfig(newCfg.ClaudeBin, newCfg.DefaultCWD, newCfg.ClaudeAllowedTools, newCfg.ClaudeDangerMode)
+		cfg.ClaudeAskTimeout = newCfg.ClaudeAskTimeout
+		cfg.ClaudeSessionTimeout = newCfg.ClaudeSessionTimeout
+		cfg.MaxChunkSize = newCfg.MaxChunkSize
+		askCmd.UpdateConfig(newCfg.ClaudeBin, newCfg.DefaultCWD, newCfg.ClaudeAllowedTools, newCfg.ClaudeDangerMode, newCfg.ClaudeAskTimeout)
 		shellCmd.SetWhitelist(newCfg.ShellWhitelist)
 		hookServer.SetDefaultChatID(newCfg.NotifyChatID)
 		log.Println("配置已热重载")
-		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、Shell 白名单、通知目标\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
+		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、分块配置、Shell 白名单、通知目标\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
 	}
 	router.Register(commands.NewReloadCommand(reloadFn))
 	router.Register(helpCmd)

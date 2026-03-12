@@ -24,7 +24,7 @@ func exeDir() string {
 }
 
 func pidFilePath() string {
-	return filepath.Join(exeDir(), "feishu-bot.pid")
+	return filepath.Join(exeDir(), "chatcc.pid")
 }
 
 func defaultLogDir() string {
