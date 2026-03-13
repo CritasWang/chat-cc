@@ -40,6 +40,10 @@ type Config struct {
 	// 消息分块配置
 	MaxChunkSize int `yaml:"max_chunk_size"` // 消息分块大小（默认 3500 字符）
 
+	// 定时状态推送
+	StatusPushInterval int    `yaml:"status_push_interval"` // 推送间隔（分钟），0 禁用，默认 180（3小时）
+	StatusPushChatID   string `yaml:"status_push_chat_id"`  // 推送目标群聊，为空则用 notify_chat_id
+
 	// 日志级别
 	LogLevel string `yaml:"log_level"` // debug, info, warn, error
 }
@@ -66,6 +70,7 @@ func DefaultConfig() *Config {
 		ClaudeAskTimeout:     50,   // 默认 50 分钟
 		ClaudeSessionTimeout: 50,   // 默认 50 分钟
 		MaxChunkSize:         3500, // 默认 3500 字符
+		StatusPushInterval:   180,  // 默认 3 小时
 	}
 }
 

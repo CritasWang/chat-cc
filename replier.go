@@ -192,6 +192,35 @@ func (r *Replier) ReplyCardChunked(messageID, text string, maxBodyRunes int) err
 	return nil
 }
 
+// SendCardToChat 主动向聊天发送卡片消息
+func (r *Replier) SendCardToChat(chatID, cardJSON string) (string, error) {
+	resp, err := r.client.Im.Message.Create(context.Background(),
+		larkim.NewCreateMessageReqBuilder().
+			ReceiveIdType(larkim.ReceiveIdTypeChatId).
+			Body(larkim.NewCreateMessageReqBodyBuilder().
+				MsgType(larkim.MsgTypeInteractive).
+				ReceiveId(chatID).
+				Content(cardJSON).
+				Build()).
+			Build())
+
+	if err != nil {
+		log.Printf("发送卡片到聊天失败: %v", err)
+		return "", err
+	}
+
+	if !resp.Success() {
+		log.Printf("发送卡片到聊天失败: code=%d msg=%s", resp.Code, resp.Msg)
+		return "", fmt.Errorf("feishu API error: %d %s", resp.Code, resp.Msg)
+	}
+
+	msgID := ""
+	if resp.Data != nil && resp.Data.MessageId != nil {
+		msgID = *resp.Data.MessageId
+	}
+	return msgID, nil
+}
+
 // splitIntoChunks 智能分块：优先在段落、句子边界分块，UTF-8 安全
 func splitIntoChunks(text string, maxSize int) []string {
 	if utf8.RuneCountInString(text) <= maxSize {

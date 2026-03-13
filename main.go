@@ -202,9 +202,20 @@ func runBot(configPath, logDir string) {
 	router.Register(commands.NewSendCommand(sessionCmdAdapter))
 	router.Register(commands.NewKeyCommand(sessionCmdAdapter))
 	router.Register(shellCmd)
-	router.Register(commands.NewStatusCommand(cfg, sessionAdapter, askCmd))
+	statusCmd := commands.NewStatusCommand(cfg, sessionAdapter, askCmd)
+	router.Register(statusCmd)
 	router.Register(commands.NewProjectCommand(cfg))
 	router.Register(commands.NewDangerCommand(askCmd))
+
+	// 创建定时状态推送器
+	statusPusher := NewStatusPusher(replier, func() (string, error) {
+		return statusCmd.Execute(context.Background(), "", nil)
+	})
+	pushChatID := cfg.StatusPushChatID
+	if pushChatID == "" {
+		pushChatID = cfg.NotifyChatID
+	}
+	statusPusher.Configure(cfg.StatusPushInterval, pushChatID)
 
 	// 热重载
 	reloadFn := func() (string, error) {
@@ -223,8 +234,14 @@ func runBot(configPath, logDir string) {
 		askCmd.UpdateConfig(newCfg.ClaudeBin, newCfg.DefaultCWD, newCfg.ClaudeAllowedTools, newCfg.ClaudeDangerMode, newCfg.ClaudeAskTimeout)
 		shellCmd.SetWhitelist(newCfg.ShellWhitelist)
 		hookServer.SetDefaultChatID(newCfg.NotifyChatID)
+		// 热重载定时推送配置
+		newPushChatID := newCfg.StatusPushChatID
+		if newPushChatID == "" {
+			newPushChatID = newCfg.NotifyChatID
+		}
+		statusPusher.Configure(newCfg.StatusPushInterval, newPushChatID)
 		log.Println("配置已热重载")
-		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、分块配置、Shell 白名单、通知目标\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
+		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、分块配置、Shell 白名单、通知目标、定时推送\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
 	}
 	router.Register(commands.NewReloadCommand(reloadFn))
 	router.Register(helpCmd)
@@ -262,6 +279,7 @@ func runBot(configPath, logDir string) {
 				continue
 			}
 			log.Println("正在关闭...")
+			statusPusher.Stop()
 			cancel()
 			time.Sleep(2 * time.Second)
 			os.Exit(0)
@@ -279,6 +297,11 @@ func runBot(configPath, logDir string) {
 		}
 		return fmt.Sprintf("白名单 (%d 个工具)", len(cfg.ClaudeAllowedTools))
 	}())
+	if cfg.StatusPushInterval > 0 && pushChatID != "" {
+		log.Printf("  定时推送: 每 %d 分钟 → %s", cfg.StatusPushInterval, pushChatID)
+	} else {
+		log.Println("  定时推送: 已禁用")
+	}
 
 	if err := wsClient.Start(ctx); err != nil {
 		log.Fatalf("WebSocket 连接失败: %v", err)
