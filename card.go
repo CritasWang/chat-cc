@@ -8,11 +8,16 @@ import (
 	"unicode/utf8"
 )
 
-// --- Card JSON structures ---
+// --- Feishu Card JSON structures (schema 2.0) ---
 
 type feishuCard struct {
-	Config   cardConfig    `json:"config"`
-	Header   *cardHeader   `json:"header,omitempty"`
+	Schema string      `json:"schema"`
+	Config cardConfig  `json:"config"`
+	Header *cardHeader `json:"header,omitempty"`
+	Body   cardBody    `json:"body"`
+}
+
+type cardBody struct {
 	Elements []cardElement `json:"elements"`
 }
 
@@ -30,19 +35,25 @@ type cardText struct {
 	Content string `json:"content"`
 }
 
+// cardElement supports three element types:
+//   - markdown: {tag:"markdown", content:"..."}
+//   - hr:       {tag:"hr"}
+//   - note:     {tag:"note", elements:[{tag:"plain_text", content:"..."}]}
 type cardElement struct {
-	Tag  string    `json:"tag"`
-	Text *cardText `json:"text,omitempty"`
+	Tag      string     `json:"tag"`
+	Content  string     `json:"content,omitempty"`  // for markdown
+	Elements []cardText `json:"elements,omitempty"` // for note
 }
 
-// buildCard is the internal card JSON builder.
+// buildCard assembles a schema 2.0 Feishu interactive card JSON.
 func buildCard(title, color string, elements []cardElement) string {
 	if len(elements) == 0 {
-		elements = []cardElement{{Tag: "div", Text: &cardText{Tag: "lark_md", Content: " "}}}
+		elements = []cardElement{{Tag: "markdown", Content: " "}}
 	}
 	card := feishuCard{
-		Config:   cardConfig{WideScreenMode: true},
-		Elements: elements,
+		Schema: "2.0",
+		Config: cardConfig{WideScreenMode: true},
+		Body:   cardBody{Elements: elements},
 	}
 	if title != "" {
 		card.Header = &cardHeader{
@@ -54,18 +65,19 @@ func buildCard(title, color string, elements []cardElement) string {
 	if err != nil {
 		log.Printf("card json marshal error: %v", err)
 		fallback := feishuCard{
-			Config:   cardConfig{WideScreenMode: true},
-			Elements: []cardElement{{Tag: "div", Text: &cardText{Tag: "lark_md", Content: "消息渲染失败"}}},
+			Schema: "2.0",
+			Config: cardConfig{WideScreenMode: true},
+			Body:   cardBody{Elements: []cardElement{{Tag: "markdown", Content: "消息渲染失败"}}},
 		}
 		data, _ = json.Marshal(fallback)
 	}
 	return string(data)
 }
 
-// BuildCardJSON builds a Feishu interactive card with a single content block.
+// BuildCardJSON builds a card with a single markdown content block.
 func BuildCardJSON(title, body, color string) string {
 	elements := []cardElement{
-		{Tag: "div", Text: &cardText{Tag: "lark_md", Content: body}},
+		{Tag: "markdown", Content: body},
 	}
 	return buildCard(title, color, elements)
 }
@@ -73,7 +85,8 @@ func BuildCardJSON(title, body, color string) string {
 // TextToCard converts command response text into a structured Feishu card.
 //   - Extracts first line as card header
 //   - Splits body into sections by emoji-prefixed lines
-//   - Adds hr dividers between sections for visual structure
+//   - Renders each section as a markdown element with hr dividers
+//   - Detects footer-like content (timestamps, hints) and renders as note element
 func TextToCard(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return BuildCardJSON("ChatCC", " ", "blue")
@@ -100,25 +113,56 @@ func TextToCard(text string) string {
 
 	// Short single-line response → compact card without header
 	if body == "" {
-		return BuildCardJSON("", formatSection(titleLine), color)
+		return BuildCardJSON("", titleLine, color)
 	}
 
 	// Parse body into sections by emoji-prefixed headers
 	sections := parseSections(body)
 
-	// Build card elements: section divs separated by hr
+	// Build card elements: markdown sections separated by hr
 	var elements []cardElement
+	lastIdx := len(sections) - 1
 	for i, section := range sections {
 		if i > 0 {
 			elements = append(elements, cardElement{Tag: "hr"})
 		}
-		elements = append(elements, cardElement{
-			Tag:  "div",
-			Text: &cardText{Tag: "lark_md", Content: formatSection(section)},
-		})
+		// Last section: check if it's a footer (timestamp, hint)
+		if i == lastIdx && isFooterSection(section) {
+			elements = append(elements, cardElement{
+				Tag:      "note",
+				Elements: []cardText{{Tag: "plain_text", Content: strings.TrimSpace(section)}},
+			})
+		} else {
+			elements = append(elements, cardElement{
+				Tag:     "markdown",
+				Content: formatSection(section),
+			})
+		}
 	}
 
 	return buildCard(cleanTitle, color, elements)
+}
+
+// isFooterSection detects footer-like content (timestamps, usage hints).
+// Only short sections (≤2 non-empty lines) qualify.
+func isFooterSection(section string) bool {
+	trimmed := strings.TrimSpace(section)
+	nonEmpty := 0
+	for _, l := range strings.Split(trimmed, "\n") {
+		if strings.TrimSpace(l) != "" {
+			nonEmpty++
+		}
+	}
+	if nonEmpty > 2 {
+		return false
+	}
+	if strings.Contains(trimmed, "⏱️") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "输入") && strings.Contains(trimmed, "/") {
+		return true
+	}
+	return false
 }
 
 // parseSections splits text into sections by emoji-prefixed header lines.
@@ -136,7 +180,6 @@ func parseSections(text string) []string {
 			hasLeadingEmoji(trimmed)
 
 		if isHeader && len(current) > 0 {
-			// Flush current section
 			sec := strings.TrimSpace(strings.Join(current, "\n"))
 			if sec != "" {
 				sections = append(sections, sec)
@@ -147,7 +190,6 @@ func parseSections(text string) []string {
 		}
 	}
 
-	// Flush last section
 	if len(current) > 0 {
 		sec := strings.TrimSpace(strings.Join(current, "\n"))
 		if sec != "" {
@@ -158,8 +200,10 @@ func parseSections(text string) []string {
 	return sections
 }
 
-// formatSection formats a text section for lark_md rendering.
-// Emoji-prefixed headers are bolded; decorative lines are stripped.
+// formatSection formats a text section for Feishu markdown rendering.
+//   - Emoji-prefixed headers are bolded
+//   - Command definitions (/cmd ...) get the command name bolded
+//   - Decorative lines are stripped
 func formatSection(text string) string {
 	text = strings.ReplaceAll(text, "━━━━━━━━━━━━━━━━━━━━", "")
 
@@ -174,11 +218,27 @@ func formatSection(text string) string {
 		// Emoji-prefixed headers → bold
 		if !strings.HasPrefix(trimmed, " ") && hasLeadingEmoji(trimmed) {
 			result = append(result, "**"+trimmed+"**")
-		} else {
-			result = append(result, line)
+			continue
 		}
+		// Indented command definitions: /cmd args → bold the /command name
+		if strings.HasPrefix(trimmed, "/") {
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			result = append(result, indent+boldCommandName(trimmed))
+			continue
+		}
+		result = append(result, line)
 	}
 	return strings.Join(result, "\n")
+}
+
+// boldCommandName bolds the /command portion of a command definition line.
+// e.g. "/ask <提示词>  无状态问答" → "**/ask** <提示词>  无状态问答"
+func boldCommandName(line string) string {
+	idx := strings.IndexByte(line, ' ')
+	if idx < 0 {
+		return "**" + line + "**"
+	}
+	return "**" + line[:idx] + "**" + line[idx:]
 }
 
 // inferCardColor detects appropriate card color from content keywords.
@@ -209,7 +269,6 @@ func stripEmoji(s string) string {
 	start := 0
 	for start < len(runes) {
 		r := runes[start]
-		// Skip emoji ranges and spaces after them
 		if r > 0x1F000 || (r >= 0x2600 && r <= 0x27BF) || (r >= 0xFE00 && r <= 0xFE0F) || r == 0x200D || r == 0x20E3 {
 			start++
 			continue
@@ -279,8 +338,8 @@ func TextToCardChunks(text string, maxBodyRunes int) []string {
 				elements = append(elements, cardElement{Tag: "hr"})
 			}
 			elements = append(elements, cardElement{
-				Tag:  "div",
-				Text: &cardText{Tag: "lark_md", Content: formatSection(section)},
+				Tag:     "markdown",
+				Content: formatSection(section),
 			})
 		}
 		cards = append(cards, buildCard(title, color, elements))
