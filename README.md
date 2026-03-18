@@ -140,7 +140,32 @@ status_push_chat_id: ""          # 推送目标群聊，为空则用 notify_chat
 
 ### 嵌套会话问题
 
-本项目已修复嵌套 Claude Code 会话问题。系统会自动过滤可能导致嵌套会话检测的环境变量（如 `CLAUDECODE`、`ANTHROPIC_*` 等），确保在 Claude Code 环境中也能正常启动子进程。
+本项目已修复嵌套 Claude Code 会话问题。系统会自动过滤可能导致嵌套会话检测的环境变量（如 `CLAUDECODE`、`CLAUDE_CODE_` 等），确保在 Claude Code 环境中也能正常启动子进程。
+
+### 会话健康检查与错误诊断
+
+`/session` 模式内置了完善的健康检查机制：
+
+- **启动前验证**: 自动检查工作目录是否存在，无效路径会立即报错而非静默失败
+- **启动后验证**: 创建 tmux 会话后自动验证 claude 进程是否成功启动；如果进程退出，会捕获错误输出用于诊断
+- **发送前检查**: 每次发送消息前检查 tmux 会话和 claude 进程是否仍然存活，死亡会话自动清理
+- **列表同步**: `/session list` 和 `/session status` 会与真实 tmux 状态同步，自动清理已死亡的会话
+- **remain-on-exit**: tmux 会话设置了 `remain-on-exit`，即使 claude 退出也能捕获最后的输出用于问题诊断
+
+常见问题排查：
+```
+# 如果 /session start 报错"工作目录不存在"
+# → 检查路径是否拼写正确
+/session start /Volumes/data/sources   ✅
+/session start /Volumns/data/sources   ❌ (typo)
+
+# 如果报错"claude 进程已退出"
+# → 检查 claude 命令是否可正常运行
+claude --version
+
+# 清理残留会话
+/session stop
+```
 
 ### 状态查询和项目管理
 
@@ -155,8 +180,10 @@ status_push_chat_id: ""          # 推送目标群聊，为空则用 notify_chat
 - 显示系统信息（OS、架构、运行时间）
 - 显示默认工作目录
 - 显示活跃的 Claude Code 会话及其工作目录和运行时间
+- **显示所有运行中的 Claude 进程**（包括 `/ask` 产生的 `claude -p` 进程、交互式会话、VSCode 集成），含 PID、运行模式和运行时长
 - 显示 tmux 会话列表
 - 显示 Claude Code 版本信息
+- 显示权限模式状态
 
 **查看项目列表** (`/project` 或 `/p`):
 - 显示所有配置的项目别名及其对应目录

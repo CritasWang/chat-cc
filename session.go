@@ -42,11 +42,21 @@ func (sm *SessionManager) Start(key, cwd string) error {
 	defer sm.mu.Unlock()
 
 	if s, ok := sm.sessions[key]; ok && s.Active {
-		return fmt.Errorf("会话 %s 已存在，请先 /session stop", s.Name)
+		// 检查 tmux 中会话是否真的还活着
+		if sm.tmuxSessionExists(s.Name) {
+			return fmt.Errorf("会话 %s 已存在，请先 /session stop", s.Name)
+		}
+		// 内存中标记活跃但 tmux 已死，清理后继续创建
+		delete(sm.sessions, key)
 	}
 
 	name := fmt.Sprintf("cc-%s", sanitizeName(key))
 	resolvedCWD := sm.config.ResolveCWD(cwd)
+
+	// 验证工作目录是否存在
+	if info, err := os.Stat(resolvedCWD); err != nil || !info.IsDir() {
+		return fmt.Errorf("工作目录不存在或不是目录: %s", resolvedCWD)
+	}
 
 	// 构建 claude 命令
 	// 优先使用运行时 danger 模式状态（/danger on|off 切换），回退到配置文件值
@@ -58,6 +68,9 @@ func (sm *SessionManager) Start(key, cwd string) error {
 	if isDanger {
 		claudeCmd += " --dangerously-skip-permissions"
 	}
+
+	// 如果之前存在同名 tmux 会话（残留），先清理
+	exec.Command("tmux", "kill-session", "-t", name).Run()
 
 	// 创建 tmux 会话
 	// 注意：通过 tmux 启动时，需要确保环境变量不会导致嵌套会话检测
@@ -73,8 +86,36 @@ func (sm *SessionManager) Start(key, cwd string) error {
 		return fmt.Errorf("创建 tmux 会话失败: %w", err)
 	}
 
+	// 设置 remain-on-exit，当 claude 进程退出时保留窗口以便诊断
+	exec.Command("tmux", "set-option", "-t", name, "remain-on-exit", "on").Run()
+
 	// 等待 Claude Code 启动
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
+
+	// 验证 tmux 会话是否仍然存活
+	if !sm.tmuxSessionExists(name) {
+		return fmt.Errorf("tmux 会话创建后立即退出，claude 可能启动失败。\n请检查:\n  1. claude 命令是否可用: %s\n  2. 工作目录是否正确: %s", claudeCmd, resolvedCWD)
+	}
+
+	// 检查 pane 是否仍在运行（remain-on-exit 会让 session 存在但 pane 可能已 dead）
+	paneStatus := sm.getPaneStatus(name)
+	if paneStatus == "dead" {
+		// 捕获错误输出用于诊断
+		errOutput, _ := sm.capturePane(name)
+		// 清理死亡会话
+		exec.Command("tmux", "kill-session", "-t", name).Run()
+		diagnostic := ""
+		if errOutput != "" {
+			// 取最后几行作为诊断信息
+			lines := strings.Split(strings.TrimSpace(errOutput), "\n")
+			start := 0
+			if len(lines) > 10 {
+				start = len(lines) - 10
+			}
+			diagnostic = "\n诊断输出:\n" + strings.Join(lines[start:], "\n")
+		}
+		return fmt.Errorf("claude 进程已退出，会话启动失败。%s\n请检查:\n  1. claude 命令: %s\n  2. 工作目录: %s", diagnostic, claudeCmd, resolvedCWD)
+	}
 
 	sm.sessions[key] = &Session{
 		Name:      name,
@@ -94,6 +135,39 @@ func (sm *SessionManager) Send(key, message string) (string, error) {
 
 	if !ok || !s.Active {
 		return "", fmt.Errorf("没有活跃的会话，请先 /session start [目录]")
+	}
+
+	// 检查 tmux 会话是否真的还存在
+	if !sm.tmuxSessionExists(s.Name) {
+		// 会话已死，清理内存状态
+		sm.mu.Lock()
+		s.Active = false
+		delete(sm.sessions, key)
+		sm.mu.Unlock()
+		return "", fmt.Errorf("tmux 会话已断开（可能 claude 进程已退出）。\n请使用 /session start [目录] 重新启动")
+	}
+
+	// 检查 pane 是否仍在运行
+	if sm.getPaneStatus(s.Name) == "dead" {
+		// 捕获最后输出用于诊断
+		lastOutput, _ := sm.capturePane(s.Name)
+		// 清理
+		sm.mu.Lock()
+		s.Active = false
+		delete(sm.sessions, key)
+		sm.mu.Unlock()
+		exec.Command("tmux", "kill-session", "-t", s.Name).Run()
+
+		diagnostic := ""
+		if lastOutput != "" {
+			lines := strings.Split(strings.TrimSpace(lastOutput), "\n")
+			start := 0
+			if len(lines) > 5 {
+				start = len(lines) - 5
+			}
+			diagnostic = "\n最后输出:\n" + strings.Join(lines[start:], "\n")
+		}
+		return "", fmt.Errorf("claude 进程已退出，会话已断开。%s\n请使用 /session start [目录] 重新启动", diagnostic)
 	}
 
 	// 记录发送前的 pane 内容行数
@@ -147,46 +221,97 @@ func (sm *SessionManager) GetSession(key string) (*Session, bool) {
 	return s, ok
 }
 
-// ListSessions 列出所有活跃会话
+// ListSessions 列出所有活跃会话（同步 tmux 真实状态）
 func (sm *SessionManager) ListSessions() []*Session {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 
 	var result []*Session
-	for _, s := range sm.sessions {
-		if s.Active {
-			result = append(result, s)
+	var deadKeys []string
+
+	for key, s := range sm.sessions {
+		if !s.Active {
+			continue
 		}
+		if !sm.tmuxSessionExists(s.Name) || sm.getPaneStatus(s.Name) == "dead" {
+			deadKeys = append(deadKeys, key)
+			if sm.tmuxSessionExists(s.Name) {
+				exec.Command("tmux", "kill-session", "-t", s.Name).Run()
+			}
+			continue
+		}
+		result = append(result, s)
 	}
+
+	for _, key := range deadKeys {
+		sm.sessions[key].Active = false
+		delete(sm.sessions, key)
+	}
+
 	return result
 }
 
 // ListAllSessions 列出所有活跃会话（返回副本供命令使用）
+// 同时与真实 tmux 状态同步，清理已死亡的会话
 func (sm *SessionManager) ListAllSessions() []commands.SessionInfo {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 
 	var result []commands.SessionInfo
-	for _, s := range sm.sessions {
-		if s.Active {
-			result = append(result, commands.SessionInfo{
-				Name:      s.Name,
-				CWD:       s.CWD,
-				CreatedAt: s.CreatedAt,
-				Active:    s.Active,
-			})
+	var deadKeys []string
+
+	for key, s := range sm.sessions {
+		if !s.Active {
+			continue
 		}
+		// 检查 tmux 会话是否真的还在
+		if !sm.tmuxSessionExists(s.Name) {
+			deadKeys = append(deadKeys, key)
+			continue
+		}
+		// 检查 pane 是否还活着
+		paneStatus := sm.getPaneStatus(s.Name)
+		if paneStatus == "dead" {
+			deadKeys = append(deadKeys, key)
+			// 清理已死的 tmux 会话
+			exec.Command("tmux", "kill-session", "-t", s.Name).Run()
+			continue
+		}
+		result = append(result, commands.SessionInfo{
+			Name:      s.Name,
+			CWD:       s.CWD,
+			CreatedAt: s.CreatedAt,
+			Active:    s.Active,
+		})
 	}
+
+	// 清理已死亡的会话
+	for _, key := range deadKeys {
+		sm.sessions[key].Active = false
+		delete(sm.sessions, key)
+	}
+
 	return result
 }
 
 // GetSessionByKey 获取指定 key 的会话信息（供命令使用）
+// 同时验证 tmux 会话是否真实存在
 func (sm *SessionManager) GetSessionByKey(key string) (commands.SessionInfo, bool) {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 
 	s, ok := sm.sessions[key]
 	if !ok || !s.Active {
+		return commands.SessionInfo{}, false
+	}
+
+	// 验证 tmux 会话是否真的还在
+	if !sm.tmuxSessionExists(s.Name) || sm.getPaneStatus(s.Name) == "dead" {
+		s.Active = false
+		delete(sm.sessions, key)
+		if sm.tmuxSessionExists(s.Name) {
+			exec.Command("tmux", "kill-session", "-t", s.Name).Run()
+		}
 		return commands.SessionInfo{}, false
 	}
 
@@ -248,12 +373,31 @@ func (sm *SessionManager) KillByName(name string) error {
 	return nil
 }
 
+// tmuxSessionExists 检查 tmux 会话是否真实存在
+func (sm *SessionManager) tmuxSessionExists(name string) bool {
+	cmd := exec.Command("tmux", "has-session", "-t", name)
+	return cmd.Run() == nil
+}
+
+// getPaneStatus 获取 tmux pane 的运行状态（如 "running" 或 "dead"）
+func (sm *SessionManager) getPaneStatus(name string) string {
+	cmd := exec.Command("tmux", "display-message", "-t", name, "-p", "#{pane_dead}")
+	out, err := cmd.Output()
+	if err != nil {
+		return "unknown"
+	}
+	if strings.TrimSpace(string(out)) == "1" {
+		return "dead"
+	}
+	return "running"
+}
+
 // capturePane 捕获 tmux pane 内容
 func (sm *SessionManager) capturePane(name string) (string, error) {
 	cmd := exec.Command("tmux", "capture-pane", "-t", name, "-p", "-S", "-500")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("tmux capture-pane 失败 (会话: %s): %w", name, err)
 	}
 	return string(out), nil
 }
