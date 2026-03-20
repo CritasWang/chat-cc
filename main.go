@@ -26,11 +26,14 @@ func (a *sessionManagerAdapter) ListSessions() []commands.SessionInfo {
 	sessions := a.sm.ListSessions()
 	result := make([]commands.SessionInfo, 0, len(sessions))
 	for _, s := range sessions {
+		isActive := a.sm.GetActiveSessionName(s.UserKey) == s.Name
 		result = append(result, commands.SessionInfo{
 			Name:      s.Name,
+			Label:     s.Label,
 			CWD:       s.CWD,
 			CreatedAt: s.CreatedAt,
 			Active:    s.Active,
+			IsActive:  isActive,
 		})
 	}
 	return result
@@ -45,16 +48,36 @@ func (a *sessionCommandAdapter) Start(key, cwd string) error {
 	return a.sm.Start(key, cwd)
 }
 
+func (a *sessionCommandAdapter) StartNamed(key, label, cwd string) error {
+	return a.sm.StartNamed(key, label, cwd)
+}
+
 func (a *sessionCommandAdapter) Send(key, message string) (string, error) {
 	return a.sm.Send(key, message)
+}
+
+func (a *sessionCommandAdapter) SendWithStream(key, message string, streamFn func(text string)) (string, error) {
+	return a.sm.SendWithStream(key, message, streamFn)
 }
 
 func (a *sessionCommandAdapter) Stop(key string) error {
 	return a.sm.Stop(key)
 }
 
+func (a *sessionCommandAdapter) StopByLabel(key, label string) error {
+	return a.sm.StopByLabel(key, label)
+}
+
+func (a *sessionCommandAdapter) Switch(key, target string) error {
+	return a.sm.Switch(key, target)
+}
+
 func (a *sessionCommandAdapter) GetSession(key string) (commands.SessionInfo, bool) {
 	return a.sm.GetSessionByKey(key)
+}
+
+func (a *sessionCommandAdapter) ListUserSessions(key string) []commands.SessionInfo {
+	return a.sm.ListUserSessions(key)
 }
 
 func (a *sessionCommandAdapter) ListAllSessions() []commands.SessionInfo {
@@ -231,6 +254,9 @@ func runBot(configPath, logDir string) {
 		cfg.ClaudeAskTimeout = newCfg.ClaudeAskTimeout
 		cfg.ClaudeSessionTimeout = newCfg.ClaudeSessionTimeout
 		cfg.MaxChunkSize = newCfg.MaxChunkSize
+		cfg.StreamEnabled = newCfg.StreamEnabled
+		cfg.StreamInterval = newCfg.StreamInterval
+		cfg.StreamMinDelta = newCfg.StreamMinDelta
 		askCmd.UpdateConfig(newCfg.ClaudeBin, newCfg.DefaultCWD, newCfg.ClaudeAllowedTools, newCfg.ClaudeDangerMode, newCfg.ClaudeAskTimeout)
 		shellCmd.SetWhitelist(newCfg.ShellWhitelist)
 		hookServer.SetDefaultChatID(newCfg.NotifyChatID)
@@ -241,7 +267,7 @@ func runBot(configPath, logDir string) {
 		}
 		statusPusher.Configure(newCfg.StatusPushInterval, newPushChatID)
 		log.Println("配置已热重载")
-		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、分块配置、Shell 白名单、通知目标、定时推送\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
+		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、分块配置、Shell 白名单、通知目标、定时推送、流式推送\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
 	}
 	router.Register(commands.NewReloadCommand(reloadFn))
 	router.Register(helpCmd)
@@ -251,7 +277,7 @@ func runBot(configPath, logDir string) {
 	// 启动 Hook HTTP 服务
 	hookServer.Start()
 
-	// 创建飞书事件处理器
+	// 创建飞书事件处理器（传入 replier 和 config 用于流式推送）
 	eventHandler := NewEventHandler(cfg, router, replier)
 
 	// WebSocket 客户端
@@ -301,6 +327,11 @@ func runBot(configPath, logDir string) {
 		log.Printf("  定时推送: 每 %d 分钟 → %s", cfg.StatusPushInterval, pushChatID)
 	} else {
 		log.Println("  定时推送: 已禁用")
+	}
+	if cfg.StreamEnabled {
+		log.Printf("  流式输出: 每 %d 秒（最少 %d 字符）", cfg.StreamInterval, cfg.StreamMinDelta)
+	} else {
+		log.Println("  流式输出: 已禁用")
 	}
 
 	if err := wsClient.Start(ctx); err != nil {

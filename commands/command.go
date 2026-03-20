@@ -25,12 +25,13 @@ type Command interface {
 
 // MessageMeta 消息元数据
 type MessageMeta struct {
-	MessageID   string // 消息 ID，用于回复
-	ChatID      string // 聊天 ID
-	ChatType    string // 聊天类型: p2p, group
-	SenderID    string // 发送者 open_id
-	SenderName  string // 发送者名称
-	MentionBot  bool   // 是否 @了机器人（群聊中需要）
+	MessageID  string            // 消息 ID，用于回复
+	ChatID     string            // 聊天 ID
+	ChatType   string            // 聊天类型: p2p, group
+	SenderID   string            // 发送者 open_id
+	SenderName string            // 发送者名称
+	MentionBot bool              // 是否 @了机器人（群聊中需要）
+	StreamFn   func(text string) // 可选: 流式输出回调，用于推送中间结果到聊天
 }
 
 // SessionKey 根据消息元数据生成会话 key

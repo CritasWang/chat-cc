@@ -20,9 +20,9 @@ func (c *HelpCommand) SetCommands(cmds []Command) {
 }
 
 func (c *HelpCommand) Name() string        { return "help" }
-func (c *HelpCommand) Aliases() []string    { return []string{"h", "?"} }
-func (c *HelpCommand) Description() string  { return "显示帮助信息" }
-func (c *HelpCommand) Usage() string        { return `/help [命令名]` }
+func (c *HelpCommand) Aliases() []string   { return []string{"h", "?"} }
+func (c *HelpCommand) Description() string { return "显示帮助信息" }
+func (c *HelpCommand) Usage() string       { return `/help [命令名]` }
 
 func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMeta) (string, error) {
 	target := strings.TrimSpace(args)
@@ -53,12 +53,15 @@ func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMet
 
 	sb.WriteString("💬 持久会话\n")
 	sb.WriteString("  /session start [目录]      启动 tmux 会话\n")
-	sb.WriteString("  /s <消息>                  发送到活跃会话\n")
-	sb.WriteString("  /key <按键> [次数]          发送特殊按键\n")
-	sb.WriteString("  /session status            查看当前会话详情\n")
-	sb.WriteString("  /session list              列出所有活跃会话\n")
+	sb.WriteString("  /session start --name <标签> [目录]  带标签启动\n")
+	sb.WriteString("  /session new [--name <标签>] [目录]  创建新会话\n")
+	sb.WriteString("  /session switch <标签或序号>  切换活跃会话\n")
+	sb.WriteString("  /session list              列出所有会话\n")
+	sb.WriteString("  /session status            查看活跃会话详情\n")
+	sb.WriteString("  /session stop [标签]       关闭会话\n")
 	sb.WriteString("  /session kill <会话名>     终止指定会话\n")
-	sb.WriteString("  /session stop              关闭当前会话\n\n")
+	sb.WriteString("  /s <消息>                  发送到活跃会话\n")
+	sb.WriteString("  /key <按键> [次数]          发送特殊按键\n\n")
 
 	sb.WriteString("🛠 工具\n")
 	sb.WriteString("  /shell <命令>              执行白名单命令\n")
@@ -78,6 +81,10 @@ func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMet
 	sb.WriteString("💡 示例\n")
 	sb.WriteString("  /ask 帮我看看有什么文件\n")
 	sb.WriteString("  /session start /path/to/project\n")
+	sb.WriteString("  /session start --name feat-auth @myproject\n")
+	sb.WriteString("  /session new --name debug /tmp/test\n")
+	sb.WriteString("  /session switch feat-auth\n")
+	sb.WriteString("  /session switch 2\n")
 	sb.WriteString("  /s 帮我重构这个函数\n")
 	sb.WriteString("  /key enter          发送回车\n")
 	sb.WriteString("  /key tab            发送 Tab\n")
@@ -90,6 +97,10 @@ func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMet
 	sb.WriteString("直接发送消息（无 / 前缀）:\n")
 	sb.WriteString("  有活跃会话 → 发送到会话\n")
 	sb.WriteString("  无活跃会话 → 等同 /ask\n\n")
+
+	sb.WriteString("📡 流式输出:\n")
+	sb.WriteString("  会话处理中，中间结果自动推送到聊天\n")
+	sb.WriteString("  可在 config.yaml 中配置 stream_* 参数\n\n")
 
 	sb.WriteString("输入 /help <命令名> 查看详细用法")
 	return sb.String(), nil

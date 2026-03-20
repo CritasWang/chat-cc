@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
+	"sync"
 
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
@@ -22,6 +23,10 @@ type textContent struct {
 func NewEventHandler(cfg *Config, router *Router, replier *Replier) *dispatcher.EventDispatcher {
 	// WebSocket 模式下 verificationToken 和 eventEncryptKey 传空字符串
 	handler := dispatcher.NewEventDispatcher("", "")
+
+	// 用于限制每个聊天只有一次流式推送（避免重复卡片）
+	var streamMu sync.Mutex
+	streamMsgIDs := make(map[string]string) // chatKey → 最近一次流式推送的 messageID
 
 	handler.OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 		if event.Event == nil || event.Event.Message == nil {
@@ -80,6 +85,39 @@ func NewEventHandler(cfg *Config, router *Router, replier *Replier) *dispatcher.
 			MentionBot: mentionBot,
 		}
 
+		// 为长时间运行的命令设置流式输出回调
+		if cfg.StreamEnabled && isLongRunning(text) {
+			chatKey := meta.SessionKey()
+			meta.StreamFn = func(text string) {
+				streamMu.Lock()
+				lastMsgID := streamMsgIDs[chatKey]
+				streamMu.Unlock()
+
+				// 构建流式更新卡片
+				cardJSON := BuildCardJSON("📡 进度更新", text, "indigo")
+
+				if lastMsgID != "" {
+					// 更新已有的流式推送消息（原地更新，减少消息刷屏）
+					if err := replier.UpdateCard(lastMsgID, cardJSON); err != nil {
+						log.Printf("更新流式卡片失败: %v, 降级为新消息", err)
+						// 降级为新消息
+						if newID, err := replier.ReplyCard(meta.MessageID, text); err == nil {
+							streamMu.Lock()
+							streamMsgIDs[chatKey] = newID
+							streamMu.Unlock()
+						}
+					}
+				} else {
+					// 首次流式推送：创建新卡片
+					if newID, err := replier.ReplyCard(meta.MessageID, "📡 进度更新\n━━━━━━━━━━━━━━━━━━━━\n"+text); err == nil {
+						streamMu.Lock()
+						streamMsgIDs[chatKey] = newID
+						streamMu.Unlock()
+					}
+				}
+			}
+		}
+
 		log.Printf("收到消息: sender=%s chat=%s text=%s", senderID, meta.ChatID, text)
 
 		// 异步处理命令（避免阻塞事件循环）
@@ -96,6 +134,18 @@ func NewEventHandler(cfg *Config, router *Router, replier *Replier) *dispatcher.
 			result, err := router.Dispatch(context.Background(), text, meta)
 			if err != nil {
 				result = "内部错误: " + err.Error()
+			}
+
+			// 清理流式推送状态
+			if meta.StreamFn != nil {
+				chatKey := meta.SessionKey()
+				streamMu.Lock()
+				// 更新流式卡片为"已完成"
+				if lastMsgID, ok := streamMsgIDs[chatKey]; ok && lastMsgID != "" {
+					go replier.UpdateCard(lastMsgID, BuildCardJSON("✅ 处理完成", "最终结果见下方回复", "green"))
+				}
+				delete(streamMsgIDs, chatKey)
+				streamMu.Unlock()
 			}
 
 			if result != "" {

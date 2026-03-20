@@ -74,6 +74,27 @@ func (r *Replier) Update(messageID, text string) error {
 	return nil
 }
 
+// UpdateCard 更新已发送的卡片消息内容（原地更新，用于流式推送）
+func (r *Replier) UpdateCard(messageID, cardJSON string) error {
+	resp, err := r.client.Im.Message.Patch(context.Background(),
+		larkim.NewPatchMessageReqBuilder().
+			MessageId(messageID).
+			Body(larkim.NewPatchMessageReqBodyBuilder().
+				Content(cardJSON).
+				Build()).
+			Build())
+
+	if err != nil {
+		return err
+	}
+
+	if !resp.Success() {
+		return fmt.Errorf("feishu API error: %d %s", resp.Code, resp.Msg)
+	}
+
+	return nil
+}
+
 // SendToChat 主动向聊天发送消息
 func (r *Replier) SendToChat(chatID, text string) (string, error) {
 	content, _ := json.Marshal(map[string]string{"text": text})

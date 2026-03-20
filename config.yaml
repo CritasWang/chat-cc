@@ -57,5 +57,10 @@ notify_chat_id: ""
 status_push_interval: 180            # 推送间隔（分钟），0 则禁用（默认 180，即 3 小时）
 status_push_chat_id: ""              # 推送目标群聊，为空则用 notify_chat_id
 
+# 会话中间输出流式推送（在 /session 模式下，定期将 Claude Code 输出同步到聊天）
+stream_enabled: true                         # 是否启用中间输出推送（默认 true）
+stream_interval: 5                           # 推送间隔秒数（默认 5 秒）
+stream_min_delta: 50                         # 最少新增字符数才触发推送（默认 50）
+
 # 日志级别: debug, info, warn, error
 log_level: "info"

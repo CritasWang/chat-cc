@@ -44,6 +44,11 @@ type Config struct {
 	StatusPushInterval int    `yaml:"status_push_interval"` // 推送间隔（分钟），0 禁用，默认 180（3小时）
 	StatusPushChatID   string `yaml:"status_push_chat_id"`  // 推送目标群聊，为空则用 notify_chat_id
 
+	// 会话中间输出流式推送
+	StreamEnabled  bool `yaml:"stream_enabled"`   // 是否启用中间输出推送到聊天，默认 true
+	StreamInterval int  `yaml:"stream_interval"`  // 推送间隔（秒），默认 5
+	StreamMinDelta int  `yaml:"stream_min_delta"` // 最少新增字符数才推送，默认 50
+
 	// 日志级别
 	LogLevel string `yaml:"log_level"` // debug, info, warn, error
 }
@@ -71,6 +76,9 @@ func DefaultConfig() *Config {
 		ClaudeSessionTimeout: 50,   // 默认 50 分钟
 		MaxChunkSize:         3500, // 默认 3500 字符
 		StatusPushInterval:   180,  // 默认 3 小时
+		StreamEnabled:        true, // 默认启用中间输出推送
+		StreamInterval:       5,    // 默认 5 秒
+		StreamMinDelta:       50,   // 默认 50 字符
 	}
 }
 
