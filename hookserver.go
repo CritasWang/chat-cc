@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // HookServer 提供 HTTP 端点供 Claude Code hooks 回调
@@ -112,9 +113,19 @@ func (hs *HookServer) handleNotify(w http.ResponseWriter, r *http.Request) {
 	// 结构化 task_complete 事件 → 飞书卡片
 	if notif.Event == "task_complete" && notif.Project != "" {
 		cardJSON := buildTaskCompleteCard(&notif)
-		if _, err := hs.replier.SendCardToChat(chatID, cardJSON); err != nil {
-			log.Printf("推送飞书卡片失败: %v, 降级纯文本", err)
-			// 降级：拼纯文本发送
+		var sendErr error
+		// 重试一次：应对 keep-alive 连接 EOF
+		for attempt := 0; attempt < 2; attempt++ {
+			if _, sendErr = hs.replier.SendCardToChat(chatID, cardJSON); sendErr == nil {
+				break
+			}
+			if attempt == 0 {
+				log.Printf("推送飞书卡片失败(将重试): %v", sendErr)
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+		if sendErr != nil {
+			log.Printf("推送飞书卡片重试仍失败: %v, 降级纯文本", sendErr)
 			fallbackMsg := buildTaskCompleteFallback(&notif)
 			if _, err2 := hs.replier.SendToChat(chatID, fallbackMsg); err2 != nil {
 				log.Printf("降级纯文本也失败: %v", err2)
