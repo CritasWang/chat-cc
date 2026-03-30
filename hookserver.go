@@ -10,10 +10,10 @@ import (
 
 // HookServer 提供 HTTP 端点供 Claude Code hooks 回调
 type HookServer struct {
-	port           int
-	replier        *Replier
-	defaultChatID  string
-	mu             sync.RWMutex
+	port          int
+	replier       *Replier
+	defaultChatID string
+	mu            sync.RWMutex
 	// 存储最近的 hook 通知（可供查询）
 	lastNotifications []HookNotification
 }
@@ -24,6 +24,16 @@ type HookNotification struct {
 	Tool    string `json:"tool,omitempty"`
 	Message string `json:"message,omitempty"`
 	ChatID  string `json:"chat_id,omitempty"` // 指定推送到哪个飞书聊天，为空则用默认
+
+	// 结构化字段（task_complete 事件使用）
+	Project     string `json:"project,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	Duration    string `json:"duration,omitempty"`
+	FileCount   int    `json:"file_count,omitempty"`
+	Turns       int    `json:"turns,omitempty"`
+	Prompt      string `json:"prompt,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	CompletedAt string `json:"completed_at,omitempty"`
 }
 
 func NewHookServer(port int, replier *Replier, defaultChatID string) *HookServer {
@@ -93,7 +103,25 @@ func (hs *HookServer) handleNotify(w http.ResponseWriter, r *http.Request) {
 		chatID = hs.defaultChatID
 		hs.mu.RUnlock()
 	}
-	if chatID != "" && notif.Message != "" {
+	if chatID == "" {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "info": "no chat_id"})
+		return
+	}
+
+	// 结构化 task_complete 事件 → 飞书卡片
+	if notif.Event == "task_complete" && notif.Project != "" {
+		cardJSON := buildTaskCompleteCard(&notif)
+		if _, err := hs.replier.SendCardToChat(chatID, cardJSON); err != nil {
+			log.Printf("推送飞书卡片失败: %v, 降级纯文本", err)
+			// 降级：拼纯文本发送
+			fallbackMsg := buildTaskCompleteFallback(&notif)
+			if _, err2 := hs.replier.SendToChat(chatID, fallbackMsg); err2 != nil {
+				log.Printf("降级纯文本也失败: %v", err2)
+			}
+		}
+	} else if notif.Message != "" {
+		// 兼容旧格式：纯文本消息
 		if _, err := hs.replier.SendToChat(chatID, notif.Message); err != nil {
 			log.Printf("推送飞书失败: %v", err)
 		}
@@ -101,4 +129,78 @@ func (hs *HookServer) handleNotify(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// buildTaskCompleteCard 构建任务完成的飞书卡片
+func buildTaskCompleteCard(n *HookNotification) string {
+	var elements []cardElement
+
+	// 元信息行：项目 · session · 时间 · 耗时 · 文件数 · 轮次
+	metaParts := []string{fmt.Sprintf("📁 **%s**", n.Project)}
+	if n.SessionID != "" {
+		metaParts = append(metaParts, n.SessionID)
+	}
+	if n.CompletedAt != "" {
+		metaParts = append(metaParts, n.CompletedAt)
+	}
+	if n.Duration != "" {
+		metaParts = append(metaParts, fmt.Sprintf("⏱ %s", n.Duration))
+	}
+	if n.FileCount > 0 {
+		metaParts = append(metaParts, fmt.Sprintf("📂 %d 个文件", n.FileCount))
+	}
+	if n.Turns > 0 {
+		metaParts = append(metaParts, fmt.Sprintf("🔄 %d 轮", n.Turns))
+	}
+
+	metaLine := ""
+	for i, p := range metaParts {
+		if i > 0 {
+			metaLine += "  ·  "
+		}
+		metaLine += p
+	}
+	elements = append(elements, cardElement{Tag: "markdown", Content: metaLine})
+
+	// 用户输入
+	if n.Prompt != "" {
+		elements = append(elements, cardElement{Tag: "hr"})
+		elements = append(elements, cardElement{
+			Tag:     "markdown",
+			Content: fmt.Sprintf("**📝 用户输入**\n%s", n.Prompt),
+		})
+	}
+
+	// 任务摘要
+	if n.Summary != "" {
+		elements = append(elements, cardElement{Tag: "hr"})
+		elements = append(elements, cardElement{
+			Tag:     "markdown",
+			Content: fmt.Sprintf("**📋 任务摘要**\n%s", n.Summary),
+		})
+	}
+
+	return buildCard("✅ Claude Code 任务完成", "green", elements)
+}
+
+// buildTaskCompleteFallback 卡片发送失败时的纯文本降级
+func buildTaskCompleteFallback(n *HookNotification) string {
+	msg := fmt.Sprintf("✅ Claude Code 任务完成\n📁 %s · %s · %s",
+		n.Project, n.SessionID, n.CompletedAt)
+	if n.Duration != "" {
+		msg += fmt.Sprintf(" · ⏱%s", n.Duration)
+	}
+	if n.FileCount > 0 {
+		msg += fmt.Sprintf(" · 📂%d个文件", n.FileCount)
+	}
+	if n.Turns > 0 {
+		msg += fmt.Sprintf(" · 🔄%d轮", n.Turns)
+	}
+	if n.Prompt != "" {
+		msg += fmt.Sprintf("\n\n📝 %s", n.Prompt)
+	}
+	if n.Summary != "" {
+		msg += fmt.Sprintf("\n\n📋 %s", n.Summary)
+	}
+	return msg
 }
