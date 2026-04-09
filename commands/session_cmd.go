@@ -19,8 +19,8 @@ type SessionInfo struct {
 
 // SessionIface 会话管理器接口，避免循环依赖
 type SessionIface interface {
-	Start(key, cwd string) error
-	StartNamed(key, label, cwd string) error
+	Start(key, cwd, chatID, chatType string) error
+	StartNamed(key, label, cwd, chatID, chatType string) error
 	Send(key, message string) (string, error)
 	SendWithStream(key, message string, streamFn func(text string)) (string, error)
 	SendKeys(key string, tmuxKeys ...string) error
@@ -78,11 +78,11 @@ func (c *SessionCommand) Execute(ctx context.Context, args string, meta *Message
 	case "start":
 		label, cwd := parseStartArgs(subArgs)
 		if label != "" {
-			if err := c.sm.StartNamed(key, label, cwd); err != nil {
+			if err := c.sm.StartNamed(key, label, cwd, meta.ChatID, meta.ChatType); err != nil {
 				return fmt.Sprintf("启动失败: %s", err), nil
 			}
 		} else {
-			if err := c.sm.Start(key, cwd); err != nil {
+			if err := c.sm.Start(key, cwd, meta.ChatID, meta.ChatType); err != nil {
 				return fmt.Sprintf("启动失败: %s", err), nil
 			}
 		}
@@ -125,7 +125,7 @@ func (c *SessionCommand) Execute(ctx context.Context, args string, meta *Message
 	case "new":
 		// /session new [--name <label>] [cwd] 的快捷方式
 		label, cwd := parseStartArgs(subArgs)
-		if err := c.sm.StartNamed(key, label, cwd); err != nil {
+		if err := c.sm.StartNamed(key, label, cwd, meta.ChatID, meta.ChatType); err != nil {
 			return fmt.Sprintf("创建会话失败: %s", err), nil
 		}
 		labelDisplay := label

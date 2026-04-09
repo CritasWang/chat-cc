@@ -44,12 +44,12 @@ type sessionCommandAdapter struct {
 	sm *SessionManager
 }
 
-func (a *sessionCommandAdapter) Start(key, cwd string) error {
-	return a.sm.Start(key, cwd)
+func (a *sessionCommandAdapter) Start(key, cwd, chatID, chatType string) error {
+	return a.sm.Start(key, cwd, chatID, chatType)
 }
 
-func (a *sessionCommandAdapter) StartNamed(key, label, cwd string) error {
-	return a.sm.StartNamed(key, label, cwd)
+func (a *sessionCommandAdapter) StartNamed(key, label, cwd, chatID, chatType string) error {
+	return a.sm.StartNamed(key, label, cwd, chatID, chatType)
 }
 
 func (a *sessionCommandAdapter) Send(key, message string) (string, error) {
@@ -210,6 +210,10 @@ func runBot(configPath, logDir string) {
 	router := NewRouter()
 	hookServer := NewHookServer(cfg.HookPort, replier, cfg.NotifyChatID)
 
+	// 创建会话监视器（后台监控 tmux 会话状态变化）
+	sessionMonitor := NewSessionMonitor(sessionMgr, replier)
+	sessionMgr.SetInteractionListener(sessionMonitor)
+
 	// 创建会话管理器适配器
 	sessionAdapter := &sessionManagerAdapter{sm: sessionMgr}
 
@@ -230,6 +234,24 @@ func runBot(configPath, logDir string) {
 	router.Register(commands.NewProjectCommand(cfg))
 	router.Register(commands.NewDangerCommand(askCmd))
 
+	// 注册快捷键命令（/y /n /enter /esc /tab /1 /2 /3）
+	quickKeys := []struct {
+		name, display string
+		keys          []string
+	}{
+		{"y", "y↵ 允许", []string{"y"}},
+		{"n", "n↵ 拒绝", []string{"n"}},
+		{"enter", "↵ Enter", []string{"Enter"}},
+		{"esc", "⎋ Esc", []string{"Escape"}},
+		{"tab", "⇥ Tab", []string{"Tab"}},
+		{"1", "1↵", []string{"1"}},
+		{"2", "2↵", []string{"2"}},
+		{"3", "3↵", []string{"3"}},
+	}
+	for _, q := range quickKeys {
+		router.Register(commands.NewQuickKeyCommand(q.name, q.display, q.keys, sessionCmdAdapter))
+	}
+
 	// 创建定时状态推送器
 	statusPusher := NewStatusPusher(replier, func() (string, error) {
 		return statusCmd.Execute(context.Background(), "", nil)
@@ -239,6 +261,9 @@ func runBot(configPath, logDir string) {
 		pushChatID = cfg.NotifyChatID
 	}
 	statusPusher.Configure(cfg.StatusPushInterval, pushChatID)
+
+	// 启动会话监视器
+	sessionMonitor.Configure(cfg.SessionMonitorEnabled, cfg.SessionMonitorInterval, cfg.SessionMonitorStableSecs)
 
 	// 热重载
 	reloadFn := func() (string, error) {
@@ -266,8 +291,13 @@ func runBot(configPath, logDir string) {
 			newPushChatID = newCfg.NotifyChatID
 		}
 		statusPusher.Configure(newCfg.StatusPushInterval, newPushChatID)
+		// 热重载会话监视器配置
+		cfg.SessionMonitorEnabled = newCfg.SessionMonitorEnabled
+		cfg.SessionMonitorInterval = newCfg.SessionMonitorInterval
+		cfg.SessionMonitorStableSecs = newCfg.SessionMonitorStableSecs
+		sessionMonitor.Configure(newCfg.SessionMonitorEnabled, newCfg.SessionMonitorInterval, newCfg.SessionMonitorStableSecs)
 		log.Println("配置已热重载")
-		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、分块配置、Shell 白名单、通知目标、定时推送、流式推送\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
+		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、分块配置、Shell 白名单、通知目标、定时推送、流式推送、会话监视器\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
 	}
 	router.Register(commands.NewReloadCommand(reloadFn))
 	router.Register(helpCmd)
@@ -306,6 +336,7 @@ func runBot(configPath, logDir string) {
 			}
 			log.Println("正在关闭...")
 			statusPusher.Stop()
+			sessionMonitor.Stop()
 			cancel()
 			time.Sleep(2 * time.Second)
 			os.Exit(0)

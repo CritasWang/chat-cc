@@ -49,6 +49,11 @@ type Config struct {
 	StreamInterval int  `yaml:"stream_interval"`  // 推送间隔（秒），默认 5
 	StreamMinDelta int  `yaml:"stream_min_delta"` // 最少新增字符数才推送，默认 50
 
+	// 会话监视器（后台监控 tmux 会话，检测完成/等待输入事件并主动通知飞书）
+	SessionMonitorEnabled    bool `yaml:"session_monitor_enabled"`     // 是否启用，默认 true
+	SessionMonitorInterval   int  `yaml:"session_monitor_interval"`    // 轮询间隔（秒），默认 5
+	SessionMonitorStableSecs int  `yaml:"session_monitor_stable_secs"` // 输出连续稳定多少秒视为完成，默认 8
+
 	// 日志级别
 	LogLevel string `yaml:"log_level"` // debug, info, warn, error
 }
@@ -79,6 +84,11 @@ func DefaultConfig() *Config {
 		StreamEnabled:        true, // 默认启用中间输出推送
 		StreamInterval:       5,    // 默认 5 秒
 		StreamMinDelta:       50,   // 默认 50 字符
+
+		// 会话监视器默认启用，每 5 秒轮询一次，输出稳定 8 秒视为完成
+		SessionMonitorEnabled:    true,
+		SessionMonitorInterval:   5,
+		SessionMonitorStableSecs: 8,
 	}
 }
 

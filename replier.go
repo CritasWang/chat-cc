@@ -95,16 +95,22 @@ func (r *Replier) UpdateCard(messageID, cardJSON string) error {
 	return nil
 }
 
-// SendToChat 主动向聊天发送消息
+// SendToChat 主动向聊天发送消息（默认使用 chat_id 作为接收方类型）
 func (r *Replier) SendToChat(chatID, text string) (string, error) {
+	return r.SendToWithIDType(chatID, larkim.ReceiveIdTypeChatId, text)
+}
+
+// SendToWithIDType 主动向指定接收方发送纯文本消息
+// idType 可以是 ReceiveIdTypeChatId / ReceiveIdTypeOpenId / ReceiveIdTypeUnionId 等
+func (r *Replier) SendToWithIDType(receiveID, idType, text string) (string, error) {
 	content, _ := json.Marshal(map[string]string{"text": text})
 
 	resp, err := r.client.Im.Message.Create(context.Background(),
 		larkim.NewCreateMessageReqBuilder().
-			ReceiveIdType(larkim.ReceiveIdTypeChatId).
+			ReceiveIdType(idType).
 			Body(larkim.NewCreateMessageReqBodyBuilder().
 				MsgType(larkim.MsgTypeText).
-				ReceiveId(chatID).
+				ReceiveId(receiveID).
 				Content(string(content)).
 				Build()).
 			Build())
@@ -213,14 +219,20 @@ func (r *Replier) ReplyCardChunked(messageID, text string, maxBodyRunes int) err
 	return nil
 }
 
-// SendCardToChat 主动向聊天发送卡片消息
+// SendCardToChat 主动向聊天发送卡片消息（默认使用 chat_id 作为接收方类型）
 func (r *Replier) SendCardToChat(chatID, cardJSON string) (string, error) {
+	return r.SendCardToChatWithIDType(chatID, larkim.ReceiveIdTypeChatId, cardJSON)
+}
+
+// SendCardToChatWithIDType 主动向指定接收方发送卡片消息
+// idType 可以是 ReceiveIdTypeChatId / ReceiveIdTypeOpenId 等
+func (r *Replier) SendCardToChatWithIDType(receiveID, idType, cardJSON string) (string, error) {
 	resp, err := r.client.Im.Message.Create(context.Background(),
 		larkim.NewCreateMessageReqBuilder().
-			ReceiveIdType(larkim.ReceiveIdTypeChatId).
+			ReceiveIdType(idType).
 			Body(larkim.NewCreateMessageReqBodyBuilder().
 				MsgType(larkim.MsgTypeInteractive).
-				ReceiveId(chatID).
+				ReceiveId(receiveID).
 				Content(cardJSON).
 				Build()).
 			Build())

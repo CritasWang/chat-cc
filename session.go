@@ -13,6 +13,12 @@ import (
 	"chatcc/commands"
 )
 
+// SessionInteractionListener 会话交互监听器
+// 用于通知 SessionMonitor 会话刚被用户驱动过，避免重复通知
+type SessionInteractionListener interface {
+	OnSessionInteracted(tmuxName string)
+}
+
 // Session 表示一个 tmux 中运行的 Claude Code 会话
 type Session struct {
 	Name      string // tmux session name (e.g. "cc-abc123-1")
@@ -21,6 +27,8 @@ type Session struct {
 	CreatedAt time.Time
 	Active    bool
 	UserKey   string // 归属的 user/chat key
+	ChatID    string // 创建时的飞书 chat_id，用于主动通知路由
+	ChatType  string // "p2p" 或 "group"
 }
 
 // SessionManager 管理多个 tmux Claude Code 会话
@@ -33,6 +41,7 @@ type SessionManager struct {
 	config         *Config
 	dangerModeFunc func() bool // 运行时获取 danger 模式状态
 	counter        int64       // 用于生成唯一会话名
+	listener       SessionInteractionListener
 }
 
 func NewSessionManager(cfg *Config, dangerModeFunc func() bool) *SessionManager {
@@ -45,14 +54,31 @@ func NewSessionManager(cfg *Config, dangerModeFunc func() bool) *SessionManager 
 	}
 }
 
+// SetInteractionListener 注册交互监听器（SessionMonitor 用）
+func (sm *SessionManager) SetInteractionListener(l SessionInteractionListener) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.listener = l
+}
+
+// notifyInteracted 在锁外通知 listener（调用方必须不持锁）
+func (sm *SessionManager) notifyInteracted(tmuxName string) {
+	sm.mu.RLock()
+	l := sm.listener
+	sm.mu.RUnlock()
+	if l != nil && tmuxName != "" {
+		l.OnSessionInteracted(tmuxName)
+	}
+}
+
 // Start 创建一个新的 tmux 会话并启动 Claude Code
 // label 为空则自动生成 (default, session-2, session-3...)
-func (sm *SessionManager) Start(key, cwd string) error {
-	return sm.StartNamed(key, "", cwd)
+func (sm *SessionManager) Start(key, cwd, chatID, chatType string) error {
+	return sm.StartNamed(key, "", cwd, chatID, chatType)
 }
 
 // StartNamed 创建一个带标签的 tmux 会话
-func (sm *SessionManager) StartNamed(key, label, cwd string) error {
+func (sm *SessionManager) StartNamed(key, label, cwd, chatID, chatType string) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -142,6 +168,8 @@ func (sm *SessionManager) StartNamed(key, label, cwd string) error {
 		CreatedAt: time.Now(),
 		Active:    true,
 		UserKey:   key,
+		ChatID:    chatID,
+		ChatType:  chatType,
 	}
 
 	sm.sessions[name] = session
@@ -245,11 +273,17 @@ func (sm *SessionManager) SendWithStream(key, message string, streamFn func(text
 		return "", fmt.Errorf("发送消息失败: %w", err)
 	}
 
+	// 通知监听器：用户主动驱动了此会话，重置监控状态
+	sm.notifyInteracted(s.Name)
+
 	// 轮询等待输出稳定（带流式回调）
 	response, err := sm.waitForResponse(s.Name, beforeLines, streamFn)
 	if err != nil {
 		return "", err
 	}
+
+	// 再次通知：本轮交互结束
+	sm.notifyInteracted(s.Name)
 
 	return response, nil
 }
@@ -480,6 +514,9 @@ func (sm *SessionManager) SendKeys(key string, tmuxKeys ...string) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("发送按键失败: %w", err)
 	}
+
+	// 通知监听器：用户主动驱动了此会话，重置监控状态
+	sm.notifyInteracted(s.Name)
 	return nil
 }
 
@@ -597,6 +634,33 @@ func (sm *SessionManager) GetActiveSessionName(key string) string {
 	return sm.activeSession[key]
 }
 
+// HasActiveSession 判断 userKey 是否存在活跃会话
+func (sm *SessionManager) HasActiveSession(key string) bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	tmuxName := sm.activeSession[key]
+	s, ok := sm.sessions[tmuxName]
+	return ok && s.Active
+}
+
+// SnapshotActive 返回当前所有活跃会话的拷贝，供 SessionMonitor 在锁外使用
+// 返回的切片中每个 *Session 都是一个独立副本，外部可以安全读取字段
+func (sm *SessionManager) SnapshotActive() []*Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	result := make([]*Session, 0, len(sm.sessions))
+	for _, s := range sm.sessions {
+		if !s.Active {
+			continue
+		}
+		// 浅拷贝：Session 字段都是值类型
+		cp := *s
+		result = append(result, &cp)
+	}
+	return result
+}
+
 // waitForResponse 轮询 tmux 输出直到稳定，支持流式回调
 func (sm *SessionManager) waitForResponse(name string, beforeLines int, streamFn func(string)) (string, error) {
 	// 先等一小段时间让 Claude 开始处理
@@ -676,16 +740,20 @@ func extractNewOutput(content string, beforeLines int) string {
 	return strings.TrimSpace(output)
 }
 
+// 包级编译的正则（避免每次调用重复编译）
+var (
+	ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?[@-~]`)
+	nameCleanRe  = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+)
+
 // stripANSI 移除 ANSI 转义码
 func stripANSI(s string) string {
-	re := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?[@-~]`)
-	return re.ReplaceAllString(s, "")
+	return ansiEscapeRe.ReplaceAllString(s, "")
 }
 
 // sanitizeName 清理名称用于 tmux session name
 func sanitizeName(s string) string {
-	re := regexp.MustCompile(`[^a-zA-Z0-9_-]`)
-	result := re.ReplaceAllString(s, "-")
+	result := nameCleanRe.ReplaceAllString(s, "-")
 	if len(result) > 20 {
 		result = result[:20]
 	}

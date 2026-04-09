@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -297,6 +298,78 @@ func hasLeadingEmoji(s string) bool {
 // MaxCardBodyRunes is the max rune count per card body.
 const MaxCardBodyRunes = 3000
 
+// BuildSessionCompleteCard 构建「会话任务完成」通知卡片
+// 绿色头部，包含工作目录、耗时、最后若干行输出
+func BuildSessionCompleteCard(sessionLabel, cwd, tail string, duration time.Duration) string {
+	// 元信息行
+	metaParts := []string{}
+	if sessionLabel != "" {
+		metaParts = append(metaParts, fmt.Sprintf("🏷 **%s**", sessionLabel))
+	}
+	if cwd != "" {
+		metaParts = append(metaParts, fmt.Sprintf("📁 `%s`", cwd))
+	}
+	if duration > 0 {
+		metaParts = append(metaParts, fmt.Sprintf("⏱ %s", formatDurationShort(duration)))
+	}
+	metaLine := strings.Join(metaParts, "  ·  ")
+
+	elements := []cardElement{
+		{Tag: "markdown", Content: metaLine},
+	}
+
+	// 截取最后 20 行输出作为摘要
+	tail = strings.TrimSpace(stripANSI(tail))
+	if tail != "" {
+		lines := strings.Split(tail, "\n")
+		if len(lines) > 20 {
+			lines = lines[len(lines)-20:]
+		}
+		// 限制每行最长 200 字符
+		for i, l := range lines {
+			if utf8.RuneCountInString(l) > 200 {
+				runes := []rune(l)
+				lines[i] = string(runes[:200]) + "…"
+			}
+		}
+		summary := strings.Join(lines, "\n")
+		elements = append(elements, cardElement{Tag: "hr"})
+		elements = append(elements, cardElement{
+			Tag:     "markdown",
+			Content: fmt.Sprintf("**📋 最后输出**\n```\n%s\n```", summary),
+		})
+	}
+
+	// footer note
+	elements = append(elements, cardElement{
+		Tag: "note",
+		Elements: []cardText{{
+			Tag:     "plain_text",
+			Content: fmt.Sprintf("于 %s 完成 · 使用 /s 继续对话", time.Now().Format("2006-01-02 15:04:05")),
+		}},
+	})
+
+	return buildCard("✅ 会话已完成", "green", elements)
+}
+
+// formatDurationShort 格式化 duration 为短文本
+func formatDurationShort(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.0fs", d.Seconds())
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) % 60
+		if s == 0 {
+			return fmt.Sprintf("%dm", m)
+		}
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	return fmt.Sprintf("%dh%dm", h, m)
+}
+
 // TextToCardChunks splits long text into multiple structured card JSON strings.
 func TextToCardChunks(text string, maxBodyRunes int) []string {
 	if maxBodyRunes <= 0 {
@@ -345,4 +418,110 @@ func TextToCardChunks(text string, maxBodyRunes int) []string {
 		cards = append(cards, buildCard(title, color, elements))
 	}
 	return cards
+}
+
+// BuildPromptWaitingCard 构建「会话等待输入」通知卡片
+// 橙色头部，包含提示文本和快捷命令说明
+func BuildPromptWaitingCard(sessionLabel, tail, promptType string) string {
+	var elements []cardElement
+
+	// 提示文本：提取最后几行
+	tail = strings.TrimSpace(stripANSI(tail))
+	if tail != "" {
+		lines := strings.Split(tail, "\n")
+		// 只取最后 10 行
+		if len(lines) > 10 {
+			lines = lines[len(lines)-10:]
+		}
+		promptText := strings.Join(lines, "\n")
+		elements = append(elements, cardElement{
+			Tag:     "markdown",
+			Content: fmt.Sprintf("```\n%s\n```", promptText),
+		})
+	}
+
+	elements = append(elements, cardElement{Tag: "hr"})
+
+	// 根据提示类型调整快捷命令展示
+	var quickHelp string
+	switch promptType {
+	case "yn":
+		quickHelp = "**💬 快捷回复：**\n" +
+			"`/y` 允许  ·  `/n` 拒绝  ·  `/esc` 取消\n" +
+			"或使用 `/s <自定义回复>` 发送任意文本"
+	case "menu":
+		quickHelp = "**💬 快捷回复：**\n" +
+			"`/1` 选项1  ·  `/2` 选项2  ·  `/3` 选项3\n" +
+			"`/enter` 确认  ·  `/esc` 取消\n" +
+			"或使用 `/s <自定义回复>` 发送任意文本"
+	case "enter":
+		quickHelp = "**💬 快捷回复：**\n" +
+			"`/enter` 继续  ·  `/esc` 取消\n" +
+			"或使用 `/s <自定义回复>` 发送任意文本"
+	default: // "generic"
+		quickHelp = "**💬 快捷回复：**\n" +
+			"`/y` 允许  ·  `/n` 拒绝  ·  `/enter` 回车  ·  `/esc` 取消\n" +
+			"`/1` `/2` `/3` 数字选项  ·  `/tab` Tab\n" +
+			"或使用 `/s <自定义回复>` 发送任意文本"
+	}
+	elements = append(elements, cardElement{
+		Tag:     "markdown",
+		Content: quickHelp,
+	})
+
+	title := "⌨️ 等待输入"
+	if sessionLabel != "" {
+		title = fmt.Sprintf("⌨️ 会话 %s 等待输入", sessionLabel)
+	}
+
+	return buildCard(title, "orange", elements)
+}
+
+// detectPromptType 根据 pane 内容推断交互提示类型
+// 返回: "yn" | "enter" | "menu" | "generic"
+func detectPromptType(content string) string {
+	cleaned := stripANSI(content)
+	lines := strings.Split(cleaned, "\n")
+	if len(lines) == 0 {
+		return "generic"
+	}
+
+	// 取最后 5 行用于分析
+	checkLines := 5
+	if len(lines) < checkLines {
+		checkLines = len(lines)
+	}
+	lastLines := strings.ToLower(strings.Join(lines[len(lines)-checkLines:], "\n"))
+
+	// y/n 类提示
+	ynPatterns := []string{
+		"(y/n)", "[y/n]", "(yes/no)", "[yes/no]",
+		"continue? [y/n", "proceed? [y/n",
+		"are you sure?", "y or n", "yes or no",
+	}
+	for _, p := range ynPatterns {
+		if strings.Contains(lastLines, p) {
+			return "yn"
+		}
+	}
+
+	// 数字选项菜单
+	menuPatterns := []string{"1.", "1)", "1:"}
+	for _, p := range menuPatterns {
+		if strings.Contains(lastLines, p) && (strings.Contains(lastLines, "2.") || strings.Contains(lastLines, "2)") || strings.Contains(lastLines, "2:")) {
+			return "menu"
+		}
+	}
+
+	// press enter 类
+	enterPatterns := []string{
+		"press enter", "continue", "press any key",
+	}
+	for _, p := range enterPatterns {
+		if strings.Contains(lastLines, p) {
+			return "enter"
+		}
+	}
+
+	return "generic"
 }
