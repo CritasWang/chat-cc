@@ -31,6 +31,7 @@ type SessionMonitor struct {
 	interval        time.Duration
 	stableThreshold time.Duration
 	enabled         bool
+	skipPrompt      bool // LiveStreamer 启用时跳过 prompt 通知（避免重复）
 	sm              *SessionManager
 	replier         *Replier
 	cancel          context.CancelFunc
@@ -46,6 +47,13 @@ func NewSessionMonitor(sm *SessionManager, replier *Replier) *SessionMonitor {
 		interval:        5 * time.Second,
 		stableThreshold: 8 * time.Second,
 	}
+}
+
+// SetSkipPrompt 当 LiveStreamer 启用时调用，跳过 prompt 通知（实况卡片已包含提示）
+func (m *SessionMonitor) SetSkipPrompt(skip bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.skipPrompt = skip
 }
 
 // Configure 启动 / 停止 / 热更新监控器
@@ -200,7 +208,8 @@ func (m *SessionMonitor) handleSession(s *Session, content string, now time.Time
 		promptType           string
 	)
 
-	if isPrompt {
+	if isPrompt && !m.skipPrompt {
+		// skipPrompt=true 时 LiveStreamer 已在实况卡片内显示操作提示，不再单独发卡片
 		promptHash = hashPromptTail(cleaned)
 		if st.NotifiedPrompt != promptHash {
 			shouldNotifyPrompt = true

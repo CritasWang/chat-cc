@@ -39,7 +39,7 @@ type cardText struct {
 // cardElement supports three element types:
 //   - markdown: {tag:"markdown", content:"..."}
 //   - hr:       {tag:"hr"}
-//   - note:     {tag:"note", elements:[{tag:"plain_text", content:"..."}]}
+//   - note:     已废弃(schema V2 不支持)，改用 markdown + 斜体替代
 type cardElement struct {
 	Tag      string     `json:"tag"`
 	Content  string     `json:"content,omitempty"`  // for markdown
@@ -130,8 +130,8 @@ func TextToCard(text string) string {
 		// Last section: check if it's a footer (timestamp, hint)
 		if i == lastIdx && isFooterSection(section) {
 			elements = append(elements, cardElement{
-				Tag:      "note",
-				Elements: []cardText{{Tag: "plain_text", Content: strings.TrimSpace(section)}},
+				Tag:     "markdown",
+				Content: "*" + strings.TrimSpace(section) + "*",
 			})
 		} else {
 			elements = append(elements, cardElement{
@@ -298,6 +298,47 @@ func hasLeadingEmoji(s string) bool {
 // MaxCardBodyRunes is the max rune count per card body.
 const MaxCardBodyRunes = 3000
 
+// BuildLiveTerminalCard 构建实况终端卡片（用于 LiveStreamer 原地刷新）
+// 包含终端最后 N 行输出，检测到交互提示时追加操作提示栏
+func BuildLiveTerminalCard(sessionLabel, content, promptHint string) string {
+	var elements []cardElement
+
+	// 终端内容（代码块）
+	if content != "" {
+		elements = append(elements, cardElement{
+			Tag:     "markdown",
+			Content: fmt.Sprintf("```\n%s\n```", content),
+		})
+	} else {
+		elements = append(elements, cardElement{
+			Tag:     "markdown",
+			Content: "*(等待输出...)*",
+		})
+	}
+
+	// 交互提示栏（检测到 [Y/n] 等时显示）
+	if promptHint != "" {
+		elements = append(elements, cardElement{Tag: "hr"})
+		elements = append(elements, cardElement{
+			Tag:     "markdown",
+			Content: promptHint,
+		})
+	}
+
+	// 时间戳 footer（schema V2 不支持 note，用 markdown 斜体替代）
+	elements = append(elements, cardElement{
+		Tag:     "markdown",
+		Content: fmt.Sprintf("*更新于 %s · /s 发消息 · /do 组合键*", time.Now().Format("15:04:05")),
+	})
+
+	title := "📺 实况终端"
+	if sessionLabel != "" {
+		title = fmt.Sprintf("📺 %s", sessionLabel)
+	}
+
+	return buildCard(title, "indigo", elements)
+}
+
 // BuildSessionCompleteCard 构建「会话任务完成」通知卡片
 // 绿色头部，包含工作目录、耗时、最后若干行输出
 func BuildSessionCompleteCard(sessionLabel, cwd, tail string, duration time.Duration) string {
@@ -340,13 +381,10 @@ func BuildSessionCompleteCard(sessionLabel, cwd, tail string, duration time.Dura
 		})
 	}
 
-	// footer note
+	// footer（schema V2 不支持 note，用 markdown 斜体替代）
 	elements = append(elements, cardElement{
-		Tag: "note",
-		Elements: []cardText{{
-			Tag:     "plain_text",
-			Content: fmt.Sprintf("于 %s 完成 · 使用 /s 继续对话", time.Now().Format("2006-01-02 15:04:05")),
-		}},
+		Tag:     "markdown",
+		Content: fmt.Sprintf("*于 %s 完成 · 使用 /s 继续对话*", time.Now().Format("2006-01-02 15:04:05")),
 	})
 
 	return buildCard("✅ 会话已完成", "green", elements)
@@ -493,11 +531,13 @@ func detectPromptType(content string) string {
 	}
 	lastLines := strings.ToLower(strings.Join(lines[len(lines)-checkLines:], "\n"))
 
-	// y/n 类提示
+	// y/n 类提示（含 Claude Code 专属格式）
 	ynPatterns := []string{
 		"(y/n)", "[y/n]", "(yes/no)", "[yes/no]",
 		"continue? [y/n", "proceed? [y/n",
 		"are you sure?", "y or n", "yes or no",
+		"yes (y) / no (n)", "allow once", "allow?",
+		"deny (n)", "do you trust", "yes / no",
 	}
 	for _, p := range ynPatterns {
 		if strings.Contains(lastLines, p) {

@@ -2,6 +2,10 @@ package commands
 
 import "context"
 
+// CardJSONMarker 标记命令返回的是预构建的飞书卡片 JSON
+// handler 检测到此前缀时直接发送，不经过 TextToCard 转换
+const CardJSONMarker = "\x00CARD\x00"
+
 // Command 定义命令接口
 type Command interface {
 	// Name 命令名称，如 "ask", "session", "shell"

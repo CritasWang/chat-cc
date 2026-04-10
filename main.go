@@ -234,6 +234,9 @@ func runBot(configPath, logDir string) {
 	router.Register(commands.NewProjectCommand(cfg))
 	router.Register(commands.NewDangerCommand(askCmd))
 
+	// 注册 /do 宏指令
+	router.Register(commands.NewDoCommand(sessionCmdAdapter))
+
 	// 注册快捷键命令（/y /n /enter /esc /tab /1 /2 /3）
 	quickKeys := []struct {
 		name, display string
@@ -261,6 +264,15 @@ func runBot(configPath, logDir string) {
 		pushChatID = cfg.NotifyChatID
 	}
 	statusPusher.Configure(cfg.StatusPushInterval, pushChatID)
+
+	// 启动实况转播器（每 3 秒 PATCH 飞书卡片显示终端实时内容）
+	var liveStreamer *LiveStreamer
+	if cfg.LiveStreamEnabled {
+		liveStreamer = NewLiveStreamer(sessionMgr, replier)
+		liveStreamer.Start()
+		// LiveStreamer 已包含 prompt 提示，禁用 Monitor 的重复 prompt 通知
+		sessionMonitor.SetSkipPrompt(true)
+	}
 
 	// 启动会话监视器
 	sessionMonitor.Configure(cfg.SessionMonitorEnabled, cfg.SessionMonitorInterval, cfg.SessionMonitorStableSecs)
@@ -296,8 +308,19 @@ func runBot(configPath, logDir string) {
 		cfg.SessionMonitorInterval = newCfg.SessionMonitorInterval
 		cfg.SessionMonitorStableSecs = newCfg.SessionMonitorStableSecs
 		sessionMonitor.Configure(newCfg.SessionMonitorEnabled, newCfg.SessionMonitorInterval, newCfg.SessionMonitorStableSecs)
+		// 热重载实况转播器
+		if newCfg.LiveStreamEnabled && liveStreamer == nil {
+			liveStreamer = NewLiveStreamer(sessionMgr, replier)
+			liveStreamer.Start()
+			sessionMonitor.SetSkipPrompt(true)
+		} else if !newCfg.LiveStreamEnabled && liveStreamer != nil {
+			liveStreamer.Stop()
+			liveStreamer = nil
+			sessionMonitor.SetSkipPrompt(false)
+		}
+		cfg.LiveStreamEnabled = newCfg.LiveStreamEnabled
 		log.Println("配置已热重载")
-		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、分块配置、Shell 白名单、通知目标、定时推送、流式推送、会话监视器\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
+		return "✅ 配置已重载\n\n已更新: 用户白名单、群聊白名单、项目别名、Claude 工具、超时设置、分块配置、Shell 白名单、通知目标、定时推送、流式推送、会话监视器、实况转播\n⚠️ app_id/app_secret/hook_port 变更需要 restart", nil
 	}
 	router.Register(commands.NewReloadCommand(reloadFn))
 	router.Register(helpCmd)
@@ -337,6 +360,9 @@ func runBot(configPath, logDir string) {
 			log.Println("正在关闭...")
 			statusPusher.Stop()
 			sessionMonitor.Stop()
+			if liveStreamer != nil {
+				liveStreamer.Stop()
+			}
 			cancel()
 			time.Sleep(2 * time.Second)
 			os.Exit(0)
@@ -359,7 +385,9 @@ func runBot(configPath, logDir string) {
 	} else {
 		log.Println("  定时推送: 已禁用")
 	}
-	if cfg.StreamEnabled {
+	if cfg.LiveStreamEnabled {
+		log.Println("  实况转播: 已启用（每 3 秒刷新终端卡片）")
+	} else if cfg.StreamEnabled {
 		log.Printf("  流式输出: 每 %d 秒（最少 %d 字符）", cfg.StreamInterval, cfg.StreamMinDelta)
 	} else {
 		log.Println("  流式输出: 已禁用")

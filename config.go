@@ -54,6 +54,9 @@ type Config struct {
 	SessionMonitorInterval   int  `yaml:"session_monitor_interval"`    // 轮询间隔（秒），默认 5
 	SessionMonitorStableSecs int  `yaml:"session_monitor_stable_secs"` // 输出连续稳定多少秒视为完成，默认 8
 
+	// 实况转播（每 3 秒捕获 tmux 终端内容并通过飞书卡片原地刷新）
+	LiveStreamEnabled bool `yaml:"live_stream_enabled"` // 是否启用，默认 true
+
 	// 日志级别
 	LogLevel string `yaml:"log_level"` // debug, info, warn, error
 }
@@ -89,6 +92,9 @@ func DefaultConfig() *Config {
 		SessionMonitorEnabled:    true,
 		SessionMonitorInterval:   5,
 		SessionMonitorStableSecs: 8,
+
+		// 实况转播默认启用
+		LiveStreamEnabled: true,
 	}
 }
 

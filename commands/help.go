@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -27,7 +28,7 @@ func (c *HelpCommand) Usage() string       { return `/help [命令名]` }
 func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMeta) (string, error) {
 	target := strings.TrimSpace(args)
 
-	// 指定命令的详细帮助
+	// 指定命令的详细帮助（纯文本，走 TextToCard 渲染）
 	if target != "" {
 		for _, cmd := range c.commands {
 			if cmd.Name() == target {
@@ -41,67 +42,85 @@ func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMet
 		return fmt.Sprintf("未知命令: %s", target), nil
 	}
 
-	// 完整命令列表
-	var sb strings.Builder
-	sb.WriteString("📋 ChatCC 命令列表\n")
-	sb.WriteString("━━━━━━━━━━━━━━━━━━━━\n\n")
+	// 完整命令列表 → 直接构建飞书卡片 JSON（命令用 backtick 渲染为可复制 inline code）
+	return CardJSONMarker + buildHelpCard(), nil
+}
 
-	sb.WriteString("🤖 Claude Code\n")
-	sb.WriteString("  /ask <提示词>              无状态问答\n")
-	sb.WriteString("  /ask --cwd <目录> <提示词>  指定工作目录\n")
-	sb.WriteString("  /ask @别名 <提示词>         用项目别名\n\n")
+// --- 飞书卡片 JSON 构建（自包含，不依赖 main 包的 card.go） ---
 
-	sb.WriteString("💬 持久会话\n")
-	sb.WriteString("  /session start [目录]      启动 tmux 会话\n")
-	sb.WriteString("  /session start --name <标签> [目录]  带标签启动\n")
-	sb.WriteString("  /session new [--name <标签>] [目录]  创建新会话\n")
-	sb.WriteString("  /session switch <标签或序号>  切换活跃会话\n")
-	sb.WriteString("  /session list              列出所有会话\n")
-	sb.WriteString("  /session status            查看活跃会话详情\n")
-	sb.WriteString("  /session stop [标签]       关闭会话\n")
-	sb.WriteString("  /session kill <会话名>     终止指定会话\n")
-	sb.WriteString("  /s <消息>                  发送到活跃会话\n")
-	sb.WriteString("  /key <按键> [次数]          发送特殊按键\n\n")
+type helpCardText struct {
+	Tag     string `json:"tag"`
+	Content string `json:"content"`
+}
 
-	sb.WriteString("🛠 工具\n")
-	sb.WriteString("  /shell <命令>              执行白名单命令\n")
-	sb.WriteString("  /project 或 /p             查看项目别名\n")
-	sb.WriteString("  /danger on|off             切换权限绕过模式\n")
-	sb.WriteString("  /status                    查看系统状态\n")
-	sb.WriteString("  /reload                    热重载配置文件\n")
-	sb.WriteString("  /help [命令]               帮助信息\n\n")
+type helpCardElement struct {
+	Tag      string         `json:"tag"`
+	Content  string         `json:"content,omitempty"`
+	Elements []helpCardText `json:"elements,omitempty"`
+}
 
-	sb.WriteString("⌨️ /key 支持的按键\n")
-	sb.WriteString("  方向键: up down left right\n")
-	sb.WriteString("  功能键: enter tab esc space\n")
-	sb.WriteString("  Ctrl:  ctrl+c ctrl+d ctrl+z ctrl+l\n")
-	sb.WriteString("         ctrl+a ctrl+e ctrl+r ctrl+p ctrl+n\n")
-	sb.WriteString("  快捷:  y(确认) n(否认) yes(输入yes)\n\n")
+type helpCard struct {
+	Schema string `json:"schema"`
+	Config struct {
+		WideScreenMode bool `json:"wide_screen_mode"`
+	} `json:"config"`
+	Header struct {
+		Title    helpCardText `json:"title"`
+		Template string       `json:"template"`
+	} `json:"header"`
+	Body struct {
+		Elements []helpCardElement `json:"elements"`
+	} `json:"body"`
+}
 
-	sb.WriteString("💡 示例\n")
-	sb.WriteString("  /ask 帮我看看有什么文件\n")
-	sb.WriteString("  /session start /path/to/project\n")
-	sb.WriteString("  /session start --name feat-auth @myproject\n")
-	sb.WriteString("  /session new --name debug /tmp/test\n")
-	sb.WriteString("  /session switch feat-auth\n")
-	sb.WriteString("  /session switch 2\n")
-	sb.WriteString("  /s 帮我重构这个函数\n")
-	sb.WriteString("  /key enter          发送回车\n")
-	sb.WriteString("  /key tab            发送 Tab\n")
-	sb.WriteString("  /key esc            发送 Esc\n")
-	sb.WriteString("  /key up 3           连按 3 次上箭头\n")
-	sb.WriteString("  /key y              快速确认(y+回车)\n")
-	sb.WriteString("  /key ctrl+c         发送 Ctrl+C\n")
-	sb.WriteString("  /shell docker ps\n\n")
+func buildHelpCard() string {
+	elements := []helpCardElement{
+		// ⚡ 快捷操作
+		{Tag: "markdown", Content: "**⚡ 快捷操作**\n" +
+			"`/y` 允许  ·  `/n` 拒绝  ·  `/enter` 回车  ·  `/esc` 取消\n" +
+			"`/1` `/2` `/3` 数字选项  ·  `/tab` Tab"},
+		{Tag: "hr"},
 
-	sb.WriteString("直接发送消息（无 / 前缀）:\n")
-	sb.WriteString("  有活跃会话 → 发送到会话\n")
-	sb.WriteString("  无活跃会话 → 等同 /ask\n\n")
+		// 🎮 宏指令
+		{Tag: "markdown", Content: "**🎮 宏指令 /do**（秒杀 TUI 菜单）\n" +
+			"`/do 2d sp ok`  ↓↓ 空格 回车\n" +
+			"`/do 3d sp 2d sp ok`  多选操作\n" +
+			"动作: `d`↓ `u`↑ `sp`空格 `ok`回车 `esc`取消  数字前缀=重复"},
+		{Tag: "hr"},
 
-	sb.WriteString("📡 流式输出:\n")
-	sb.WriteString("  会话处理中，中间结果自动推送到聊天\n")
-	sb.WriteString("  可在 config.yaml 中配置 stream_* 参数\n\n")
+		// 💬 会话
+		{Tag: "markdown", Content: "**💬 会话交互**\n" +
+			"`/s <消息>`  发送到活跃会话\n" +
+			"`/session start [目录]`  启动会话\n" +
+			"`/session switch <标签>`  切换  ·  `/session list`  列出\n" +
+			"`/session stop [标签]`  关闭\n" +
+			"`/key <按键> [次数]`  特殊按键 (up/down/ctrl+c...)"},
+		{Tag: "hr"},
 
-	sb.WriteString("输入 /help <命令名> 查看详细用法")
-	return sb.String(), nil
+		// 🤖 问答
+		{Tag: "markdown", Content: "**🤖 无状态问答**\n" +
+			"`/ask <提示词>`  一次性问答\n" +
+			"`/ask @别名 <提示词>`  指定项目目录"},
+		{Tag: "hr"},
+
+		// 🛠 管理
+		{Tag: "markdown", Content: "**🛠 管理**\n" +
+			"`/status`  系统状态  ·  `/project`  项目别名\n" +
+			"`/shell <命令>`  白名单命令  ·  `/danger on|off`  权限模式\n" +
+			"`/reload`  热重载配置"},
+		{Tag: "hr"},
+
+		// Footer（schema V2 不支持 note，用 markdown 斜体替代）
+		{Tag: "markdown", Content: "*📺 实况转播自动运行 · 直接发消息=发到会话 · /help <命令> 查看详情*"},
+	}
+
+	card := helpCard{}
+	card.Schema = "2.0"
+	card.Config.WideScreenMode = true
+	card.Header.Title = helpCardText{Tag: "plain_text", Content: "📋 ChatCC 命令手册"}
+	card.Header.Template = "blue"
+	card.Body.Elements = elements
+
+	data, _ := json.Marshal(card)
+	return string(data)
 }

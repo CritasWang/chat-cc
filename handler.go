@@ -86,7 +86,8 @@ func NewEventHandler(cfg *Config, router *Router, replier *Replier) *dispatcher.
 		}
 
 		// 为长时间运行的命令设置流式输出回调
-		if cfg.StreamEnabled && isLongRunning(text) {
+		// 当实况转播器启用时，跳过 handler 级流式推送（LiveStreamer 已覆盖）
+		if cfg.StreamEnabled && !cfg.LiveStreamEnabled && isLongRunning(text) {
 			chatKey := meta.SessionKey()
 			meta.StreamFn = func(text string) {
 				streamMu.Lock()
@@ -152,8 +153,16 @@ func NewEventHandler(cfg *Config, router *Router, replier *Replier) *dispatcher.
 				if processingMsgID != "" {
 					replier.Update(processingMsgID, "✅ 处理完成")
 				}
-				// 以卡片形式回复，失败则降级为纯文本
-				if len(result) > cfg.MaxChunkSize {
+
+				// 检测命令是否返回预构建的卡片 JSON（如 /help）
+				if strings.HasPrefix(result, commands.CardJSONMarker) {
+					cardJSON := strings.TrimPrefix(result, commands.CardJSONMarker)
+					if _, err := replier.ReplyCardJSON(meta.MessageID, cardJSON); err != nil {
+						log.Printf("预构建卡片回复失败，降级纯文本: %v", err)
+						replier.Reply(meta.MessageID, "命令执行成功，但卡片渲染失败")
+					}
+				} else if len(result) > cfg.MaxChunkSize {
+					// 以卡片形式回复，失败则降级为纯文本
 					if err := replier.ReplyCardChunked(meta.MessageID, result, cfg.MaxChunkSize); err != nil {
 						log.Printf("卡片分块回复失败，降级纯文本: %v", err)
 						replier.ReplyChunked(meta.MessageID, result, cfg.MaxChunkSize)

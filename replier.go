@@ -163,6 +163,34 @@ func (r *Replier) ReplyChunked(messageID, text string, maxChunkSize int) error {
 	return nil
 }
 
+// ReplyCardJSON 以预构建的卡片 JSON 回复消息（不经过 TextToCard 转换）
+func (r *Replier) ReplyCardJSON(messageID, cardJSON string) (string, error) {
+	resp, err := r.client.Im.Message.Reply(context.Background(),
+		larkim.NewReplyMessageReqBuilder().
+			MessageId(messageID).
+			Body(larkim.NewReplyMessageReqBodyBuilder().
+				MsgType(larkim.MsgTypeInteractive).
+				Content(cardJSON).
+				Build()).
+			Build())
+
+	if err != nil {
+		log.Printf("回复卡片消息失败: %v", err)
+		return "", err
+	}
+
+	if !resp.Success() {
+		log.Printf("回复卡片消息失败: code=%d msg=%s", resp.Code, resp.Msg)
+		return "", fmt.Errorf("feishu API error: %d %s", resp.Code, resp.Msg)
+	}
+
+	msgID := ""
+	if resp.Data != nil && resp.Data.MessageId != nil {
+		msgID = *resp.Data.MessageId
+	}
+	return msgID, nil
+}
+
 // ReplyCard 以卡片形式回复消息
 func (r *Replier) ReplyCard(messageID, text string) (string, error) {
 	cardJSON := TextToCard(text)

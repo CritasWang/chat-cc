@@ -123,9 +123,12 @@ func (sm *SessionManager) StartNamed(key, label, cwd, chatID, chatType string) e
 	exec.Command("tmux", "kill-session", "-t", name).Run()
 
 	// 创建 tmux 会话
+	// 注入静默环境变量：
+	//   EDITOR=cat  — 防止 git commit 拉起 vim/nano 导致后台卡死
+	// 注意：不设置 CI=true，否则 Claude Code 可能拒绝进入交互模式
 	cmd := exec.Command("tmux", "new-session", "-d", "-s", name,
 		"-c", resolvedCWD,
-		fmt.Sprintf("cd %s && %s", shellQuote(resolvedCWD), claudeCmd))
+		fmt.Sprintf("export EDITOR=cat; cd %s && %s", shellQuote(resolvedCWD), claudeCmd))
 
 	cmd.Env = commands.FilterEnvForClaudeCode(os.Environ())
 
@@ -783,6 +786,7 @@ func isInteractivePrompt(content string) bool {
 	lastLinesLower := strings.ToLower(lastLines)
 
 	interactivePatterns := []string{
+		// 通用格式
 		"(y/n)",
 		"[y/n]",
 		"(yes/no)",
@@ -793,6 +797,14 @@ func isInteractivePrompt(content string) bool {
 		"press enter to continue",
 		"y or n",
 		"yes or no",
+		// Claude Code 专属格式
+		"yes (y) / no (n)", // 权限确认: Allow? yes (y) / no (n)
+		"allow once",       // Allow once / Allow always
+		"do you trust",     // Do you trust the CLAUDE.md files?
+		"yes / no",         // Claude Code 的 Yes / No 选择
+		"allow?",           // Allow? 提示
+		"deny (n)",         // Deny (n)
+		"? (y)",            // 尾部 (y) 格式
 	}
 
 	for _, pattern := range interactivePatterns {
