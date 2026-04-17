@@ -1,54 +1,56 @@
-# chatcc v3
+# ChatCC
 
-飞书 ↔ Claude Code 远程控制网关 — v3 版本。
+**Chat**（聊天）+ **CC**（Claude Code + Command）— 通过飞书消息远程操控 Claude Code 和本地程序。
 
-v3 用 **TypeScript + Claude Agent SDK** 重写。彻底抛弃 v2 的 `tmux capture-pane` + 0.5s 轮询 + ANSI stripping 体系，改为 SDK 原生 JSON 事件流 + in-process hooks + 飞书反向 MCP server。
+## 特性
 
-## 和 v2 的主要差异
-
-| 维度 | v2 (Go) | v3 (TS) |
-|---|---|---|
-| 会话执行 | tmux 子进程 + 屏幕抓取 | `@anthropic-ai/claude-agent-sdk` 的 `query()` + 长驻 async generator |
-| 输出解析 | ANSI 转义正则清洗 | 结构化 `SDKMessage` 事件流（assistant/tool_use/tool_result/result） |
-| 实况转播 | 每 3 秒轮询 PATCH | 事件驱动 PATCH（默认 throttle 500ms） |
-| 中断 | tmux `send-keys` Ctrl-C 模拟 | `query.interrupt()`，SDK 保证下一个工具边界停 |
-| 工具审批 | 无（danger mode 或配置白名单） | 每次高危工具调用出「✅ 允许 / ❌ 拒绝」卡片，in-process `canUseTool` 回调 |
-| 飞书反向能力 | 无 | in-process MCP server（`mcp__feishu__send_message` / `ping`），可带 rate limit |
-| 会话持久化 | 内存 map（重启丢） | JSON 磁盘持久化（`data/sessions/*.json`），重启后 cost 延续，session resume 下次 resume |
-| Cost/usage | 无 | `/usage` 卡片，按 thread + 全局聚合 + 估算 USD |
-| Hook 机制 | 外部 HTTP shell 调用 | SDK 原生 in-process hooks（`canUseTool` + 事件回调） |
+- **WebSocket 长连接**: 无需公网 IP，本地直接运行
+- **Claude Agent SDK 原生集成**:
+  - `/ask` — 无状态模式，单次 `query()` 调用
+  - `/session` + `/s` — 长驻 `ClaudeSDKClient`，完整上下文保持
+- **事件驱动实况转播**: SDK 事件流驱动卡片 PATCH（默认 500ms 节流），替代 v2 的 3s 轮询
+- **工具审批卡片**: 高危工具调用弹「✅ 允许 / ❌ 拒绝」卡片，in-process `canUseTool` 回调
+- **飞书反向 MCP**: Claude 可主动给飞书发消息（`mcp__feishu__send_message`），带 rate limit
+- **会话磁盘持久化**: `data/sessions/*.json`，重启后自动 resume、cost 延续
+- **Token/Cost 看板**: `/usage` 按会话 + 全局聚合 + 估算 USD
+- **精确中断**: `query.interrupt()` 替代 tmux Ctrl-C 模拟
+- **空闲自动回收**: 30 分钟无活动自动 disconnect，保留磁盘 meta，下次 resume
+- **卡片按钮交互**: 所有状态卡片支持按钮点击直接触发命令
+- **安全控制**: 用户/群聊白名单（消息 + 卡片按钮双入口统一校验）
 
 ## 快速开始
 
+### 1. 飞书应用配置
+
+1. 登录 [飞书开放平台](https://open.feishu.cn) → 创建企业自建应用
+2. 添加「机器人」能力
+3. 权限: `im:message`、`im:message:send_as_bot`、`im:message:patch`、`im:message.p2p_msg:readonly`、`im:message.group_at_msg:readonly`、`im:message.group_msg:readonly`
+4. 事件与回调 → **WebSocket 模式**
+   - **事件配置** 添加 `im.message.receive_v1`（消息接收）
+   - **回调配置** 添加 `card.action.trigger`（卡片按钮回调，通过 WS 长连接承载，无需公网/HTTP）
+5. 发布应用版本
+
+### 2. 配置
+
 ```bash
-cd chatcc-v3
 npm ci
 npm run build
 
 # 配置（二选一）
-# 1) 复用 v2 配置：symlink ../chatcc/config.local.yaml
+# 1) 复用 v2 配置
 ln -s ../chatcc/config.local.yaml config.local.yaml
 
 # 2) 或直接设环境变量
 export FEISHU_APP_ID=xxx FEISHU_APP_SECRET=xxx
+```
 
-# 启动
+### 3. 启动
+
+```bash
 npm run dev                       # 开发：tsx watch
 # 或
 node dist/main.js                 # 生产：built JS
 ```
-
-## 飞书侧最小权限 scopes
-
-```
-im:message                         # 收发消息
-im:message:send_as_bot             # 机器人发消息
-im:message.p2p_msg:readonly        # 读单聊消息
-im:message.group_at_msg:readonly   # 读群 @ 机器人消息
-im:message.group_msg:readonly      # 读群消息
-```
-
-卡片按钮回调走 **WebSocket 长连接**（Node SDK 的 `EventDispatcher` 注册 `card.action.trigger`，handler 返回值通过 WS 帧回写 Toast/Card — 和 Go SDK `OnP2CardActionTrigger` 完全等效），**无需** HTTP webhook/公网回调。
 
 ## 命令
 
@@ -60,12 +62,12 @@ im:message.group_msg:readonly      # 读群消息
 | `/ask [@别名] <问题>` | 无状态单次提问（不保留上下文） |
 | `/session start [@别名\|path]` | 启动长驻会话 |
 | `/session stop [threadKey]` | 停止会话 |
-| `/session list` | 列出活跃会话 |
+| `/session list` | 列出活跃会话（含历史持久化会话） |
 | `/s <消息>` | 向当前活跃会话发送（非命令文本也自动走这里） |
 | `/stop [threadKey]` | 精确中断当前活跃会话 |
 | `/usage` | Token/Cost 看板 |
 
-## 架构（核心文件）
+## 架构
 
 ```
 src/
@@ -76,11 +78,11 @@ src/
 │  ├─ client.ts               # Lark Client + WSClient + EventDispatcher
 │  ├─ router.ts               # 命令分发
 │  ├─ replier.ts              # 发消息 / 卡片 PATCH（含指数退避重试）
-│  ├─ card-action.ts          # 卡片按钮回调 HTTP server + 审批 resolver
+│  ├─ card-action.ts          # 卡片按钮回调（WS card.action.trigger + 审批 resolver）
 │  └─ cards/                  # 卡片渲染器（live / approval / cost / base）
 ├─ engine/
-│  ├─ session.ts              # 每 thread 一个 query() + 输入 queue
-│  ├─ pool.ts                 # SessionPool + 活跃会话指针
+│  ├─ session.ts              # 每 thread 一个 query() + 输入 queue + resume
+│  ├─ pool.ts                 # SessionPool + 活跃会话指针 + 空闲回收 + 磁盘预热
 │  ├─ streamer.ts             # 事件驱动卡片 PATCH（throttle）
 │  ├─ monitor.ts              # result → 完成通知
 │  ├─ hooks.ts                # canUseTool + ApprovalGate（审批卡片 ↔ resolver）
@@ -125,13 +127,5 @@ log_level: "info"
 npm run dev            # tsx watch
 npm run typecheck      # 只类型检查
 npm run build          # 编译到 dist/
-npm test               # vitest（里程碑后添加）
+npm test               # vitest
 ```
-
-## 当前状态
-
-v3 alpha.1 — M1～M6 完整落地，端到端可用骨架。后续：
-- 集成测试 (`test/` 目录)
-- 会话 resume 真实接管（当前 persistence 已存 sessionId，但 resume 侧未自动 wire）
-- monitor 的 idle 检测
-- PR 合并 v3 → main 切换线上部署
