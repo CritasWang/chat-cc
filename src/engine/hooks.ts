@@ -68,20 +68,35 @@ export interface HookBuildOptions {
   timeoutMs: number;
 }
 
-/** 构建 canUseTool 回调：直接对接审批卡片 */
+/** 构建 canUseTool 回调：对接审批卡片，并在 SDK AbortSignal 触发时立即放行为 deny */
 export function buildCanUseTool(opts: HookBuildOptions): CanUseTool {
-  return async (toolName, input): Promise<PermissionResult> => {
+  return async (toolName, input, { signal }): Promise<PermissionResult> => {
+    if (signal.aborted) return { behavior: 'deny', message: '已中断' };
+
     if (opts.autoApprovePatterns.some((r) => r.test(toolName))) {
       return { behavior: 'allow', updatedInput: input };
     }
     const requestId = `${opts.threadKey}:${toolName}:${Date.now()}`;
     const preview = previewJson(input);
-    const decision = await opts.gate.request(
+
+    const abortPromise = new Promise<'abort'>((resolve) => {
+      if (signal.aborted) return resolve('abort');
+      signal.addEventListener('abort', () => resolve('abort'), { once: true });
+    });
+    const approvalPromise = opts.gate.request(
       { requestId, toolName, toolInputPreview: preview, threadKey: opts.threadKey },
       opts.chatId,
       opts.timeoutMs,
     );
-    if (decision === 'allow') return { behavior: 'allow', updatedInput: input };
+
+    const winner = await Promise.race([approvalPromise, abortPromise]);
+
+    if (winner === 'abort') {
+      // 清理仍挂起的审批卡片
+      opts.gate.resolve(requestId, 'deny');
+      return { behavior: 'deny', message: '会话已中断' };
+    }
+    if (winner === 'allow') return { behavior: 'allow', updatedInput: input };
     return { behavior: 'deny', message: '用户在飞书端拒绝' };
   };
 }

@@ -47,7 +47,7 @@ export function renderLiveCard(state: LiveCardState): InteractiveCard {
   if (state.phase === 'done') {
     elems.push(
       buttonRow([
-        { text: '➕ 继续', value: { cmd: 's', args: '', threadKey: state.threadKey } },
+        { text: '📋 查看会话', value: { cmd: 'session', args: 'list', echo: '已列出' } },
         { text: '🛑 停止会话', value: { cmd: 'session', args: `stop ${state.threadKey}` }, type: 'danger' },
       ]),
     );

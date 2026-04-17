@@ -114,10 +114,11 @@ export class SessionPool {
 
   start(keyInput: ThreadKey, cwd: string): Session {
     const key = threadKey(keyInput);
+    const userKey = keyInput.senderId || keyInput.chatId;
     const existing = this.sessions.get(key);
     if (existing) {
       this.touch(key, cwd);
-      this.activeByUser.set(keyInput.senderId, key);
+      this.activeByUser.set(userKey, key);
       return existing;
     }
 
@@ -131,7 +132,7 @@ export class SessionPool {
     sess.start();
 
     this.sessions.set(key, sess);
-    this.activeByUser.set(keyInput.senderId, key);
+    this.activeByUser.set(userKey, key);
     this.meta.set(key, {
       threadKey: key,
       ...(resumeId ? { sessionId: resumeId } : {}),

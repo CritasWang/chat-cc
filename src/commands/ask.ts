@@ -26,7 +26,9 @@ export const askCommand: CommandFn = async (args, _meta, { cfg }) => {
   const options: Options = {
     cwd,
     allowedTools: cfg.claude_allowed_tools,
-    ...(cfg.claude_danger_mode ? { permissionMode: 'bypassPermissions' as const } : {}),
+    ...(cfg.claude_danger_mode
+      ? { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }
+      : {}),
   };
 
   const pieces: string[] = [];

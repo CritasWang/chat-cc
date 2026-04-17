@@ -48,7 +48,7 @@ im:message.group_at_msg:readonly   # 读群 @ 机器人消息
 im:message.group_msg:readonly      # 读群消息
 ```
 
-卡片按钮回调走 **WebSocket 长连接**（和消息事件同一通道，注册 `card.action.trigger` 即可），**无需** HTTP webhook/回调网址配置。
+在开放平台「回调配置」填 `http://<host>:<card_webhook_port><card_webhook_path>`（默认 `:9876/webhook/card`）作为卡片回调网址 — Node SDK 通过 HTTP 返回同步 Toast / 刷新卡片；WSClient 同时订阅 `card.action.trigger` 作副路径（审批 resolve 这类纯 side-effect 不依赖 HTTP 也能触发）。
 
 ## 命令
 
@@ -111,7 +111,14 @@ approval_timeout_ms: 120000          # 审批卡片超时后默认 deny
 
 stream_throttle_ms: 500              # 实况卡片 PATCH 节流
 
+card_webhook_port: 9876              # 卡片按钮回调 HTTP 端口
+card_webhook_path: "/webhook/card"
+card_encrypt_key: ""                 # 飞书 encrypt key（可选）
+card_verification_token: ""          # 飞书 verification token（可选）
+
 persistence_dir: "./data/sessions"
+idle_timeout_minutes: 30             # 会话空闲自动 disconnect（保留磁盘 meta，下次自动 resume）
+idle_check_seconds: 60
 mcp_feishu_rate_limit_ms: 10000      # MCP send_message 每 chat 最小间隔
 notify_chat_id: ""                   # 默认通知群
 log_level: "info"

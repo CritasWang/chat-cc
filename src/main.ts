@@ -12,7 +12,11 @@ import { CostAggregator } from './engine/cost.js';
 import { Persistence, type PersistedSession } from './engine/persistence.js';
 import { createApprovalGate, buildCanUseTool } from './engine/hooks.js';
 import { buildFeishuMcpServer } from './mcp/feishu-server.js';
-import { buildCardActionWsHandler } from './feishu/card-action.js';
+import {
+  buildCardActionHttpHandler,
+  buildCardActionWsHandler,
+  startCardHttpServer,
+} from './feishu/card-action.js';
 import { askCommand } from './commands/ask.js';
 import { sessionCommand } from './commands/session.js';
 import { sendCommand } from './commands/send.js';
@@ -81,7 +85,10 @@ async function main(): Promise<void> {
       const extra: Record<string, unknown> = {
         mcpServers: { feishu: mcpServer },
       };
-      if (!cfg.claude_danger_mode) {
+      if (cfg.claude_danger_mode) {
+        // SDK 要求 bypassPermissions 必须配 allowDangerouslySkipPermissions
+        extra['allowDangerouslySkipPermissions'] = true;
+      } else {
         extra['canUseTool'] = buildCanUseTool({
           threadKey,
           chatId,
@@ -140,19 +147,25 @@ async function main(): Promise<void> {
     }),
   );
 
-  const cardHandler = buildCardActionWsHandler({
+  const cardDeps = {
     router,
     deps,
     approvalResolver: (requestId: string, decision: 'allow' | 'deny') =>
       gate.resolve(requestId, decision),
-  });
+    ...(cfg.card_encrypt_key ? { encryptKey: cfg.card_encrypt_key } : {}),
+    ...(cfg.card_verification_token ? { verificationToken: cfg.card_verification_token } : {}),
+  };
+  const httpHandler = buildCardActionHttpHandler(cardDeps);
+  const wsHandler = buildCardActionWsHandler(cardDeps);
 
+  const httpServer = startCardHttpServer(httpHandler, cfg.card_webhook_port, cfg.card_webhook_path);
   const ws = buildWsClient(cfg);
-  startDispatcher(ws, cfg, router, { cardAction: cardHandler });
+  startDispatcher(ws, cfg, router, { cardAction: wsHandler });
 
   const shutdown = async (sig: string) => {
     log().info({ sig }, '收到信号，关闭');
     gate.clear();
+    httpServer.close();
     for (const item of pool.list()) {
       if (item.active) persistSession(item.threadKey);
     }

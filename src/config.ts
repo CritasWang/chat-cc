@@ -32,6 +32,16 @@ const ConfigSchema = z.object({
   idle_timeout_minutes: z.number().int().nonnegative().default(30),
   idle_check_seconds: z.number().int().positive().default(60),
 
+  /**
+   * 卡片按钮回调 HTTP webhook。飞书开放平台「回调配置」里必须填
+   * http(s)://<host>:<card_webhook_port><card_webhook_path>。
+   * WSClient 同时也会订阅 card.action.trigger 作为副路径。
+   */
+  card_webhook_port: z.number().int().positive().default(9876),
+  card_webhook_path: z.string().default('/webhook/card'),
+  card_encrypt_key: z.string().default(''),
+  card_verification_token: z.string().default(''),
+
   approval_timeout_ms: z.number().int().positive().default(120_000),
   /** 自动允许的工具名正则（按工具名匹配） */
   auto_approve_tools: z.array(z.string()).default(['^(Read|Glob|Grep|LS|WebFetch|WebSearch|TodoWrite)$']),
