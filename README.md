@@ -22,9 +22,9 @@
 1. 登录 [飞书开放平台](https://open.feishu.cn) → 创建企业自建应用
 2. 添加「机器人」能力
 3. 权限: `im:message`、`im:message:send_as_bot`、`im:message:patch`
-4. 事件订阅 → **WebSocket 模式** → 订阅:
-   - `im.message.receive_v1`（消息接收）
-   - `card.action.trigger`（卡片按钮点击回调，开启后可用按钮交互代替文字命令）
+4. 事件与回调 → **WebSocket 模式**
+   - **事件配置** 添加 `im.message.receive_v1`（消息接收）
+   - **回调配置** 添加 `card.action.trigger`（卡片按钮点击回调，开启后可用按钮交互代替文字命令）
 5. 发布应用版本
 
 ### 2. 配置
