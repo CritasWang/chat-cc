@@ -58,8 +58,11 @@ export class Session {
   createdAt = new Date();
   lastUsedAt = new Date();
 
+  readonly cwd: string;
+
   constructor(private readonly cfg: SessionConfig) {
     this.threadKey = cfg.threadKey;
+    this.cwd = cfg.cwd;
     if (cfg.resumeId) this.sessionId = cfg.resumeId;
   }
 

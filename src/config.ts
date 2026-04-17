@@ -29,6 +29,8 @@ const ConfigSchema = z.object({
   stream_throttle_ms: z.number().int().positive().default(500),
 
   persistence_dir: z.string().default('./data/sessions'),
+  idle_timeout_minutes: z.number().int().nonnegative().default(30),
+  idle_check_seconds: z.number().int().positive().default(60),
 
   approval_timeout_ms: z.number().int().positive().default(120_000),
   /** 自动允许的工具名正则（按工具名匹配） */

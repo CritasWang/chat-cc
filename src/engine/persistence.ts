@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { UsageSnapshot } from './events.js';
 import { log } from '../logger.js';
@@ -42,9 +42,7 @@ export class Persistence {
   delete(threadKey: string): void {
     try {
       const p = this.pathOf(threadKey);
-      if (existsSync(p)) {
-        writeFileSync(p, ''); // 不严格 unlink，避免竞态；下次 load 时 JSON.parse 报错即跳过
-      }
+      if (existsSync(p)) unlinkSync(p);
     } catch (err) {
       log().warn({ err, threadKey }, '删除持久化文件失败');
     }
