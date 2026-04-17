@@ -48,7 +48,7 @@ im:message.group_at_msg:readonly   # 读群 @ 机器人消息
 im:message.group_msg:readonly      # 读群消息
 ```
 
-同时在开放平台「卡片回调请求网址」填写 `http://<host>:<card_webhook_port><card_webhook_path>`（默认 `:9876/webhook/card`），用于按钮回调。
+卡片按钮回调走 **WebSocket 长连接**（和消息事件同一通道，注册 `card.action.trigger` 即可），**无需** HTTP webhook/回调网址配置。
 
 ## 命令
 
@@ -110,8 +110,6 @@ auto_approve_tools:                  # canUseTool 层白名单（正则匹配工
 approval_timeout_ms: 120000          # 审批卡片超时后默认 deny
 
 stream_throttle_ms: 500              # 实况卡片 PATCH 节流
-card_webhook_port: 9876              # 卡片按钮回调 HTTP 监听端口
-card_webhook_path: "/webhook/card"
 
 persistence_dir: "./data/sessions"
 mcp_feishu_rate_limit_ms: 10000      # MCP send_message 每 chat 最小间隔

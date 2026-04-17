@@ -12,7 +12,7 @@ import { CostAggregator } from './engine/cost.js';
 import { Persistence } from './engine/persistence.js';
 import { createApprovalGate, buildCanUseTool, type ApprovalGate } from './engine/hooks.js';
 import { buildFeishuMcpServer } from './mcp/feishu-server.js';
-import { buildCardActionHandler, startCardHttpServer } from './feishu/card-action.js';
+import { buildCardActionWsHandler } from './feishu/card-action.js';
 import { askCommand } from './commands/ask.js';
 import { sessionCommand } from './commands/session.js';
 import { sendCommand } from './commands/send.js';
@@ -75,20 +75,19 @@ async function main(): Promise<void> {
     }),
   );
 
-  const ws = buildWsClient(cfg);
-  startDispatcher(ws, cfg, router);
-
-  const cardHandler = buildCardActionHandler({
+  const cardHandler = buildCardActionWsHandler({
     router,
     deps: { cfg, pool, replier },
-    approvalResolver: (requestId, decision) => gate.resolve(requestId, decision),
+    approvalResolver: (requestId: string, decision: 'allow' | 'deny') =>
+      gate.resolve(requestId, decision),
   });
-  const httpServer = startCardHttpServer(cardHandler, cfg.card_webhook_port, cfg.card_webhook_path);
+
+  const ws = buildWsClient(cfg);
+  startDispatcher(ws, cfg, router, { cardAction: cardHandler });
 
   const shutdown = async (sig: string) => {
     log().info({ sig }, '收到信号，关闭');
     gate.clear();
-    httpServer.close();
     await pool.closeAll().catch((err) => log().error({ err }, 'closeAll 失败'));
     process.exit(0);
   };

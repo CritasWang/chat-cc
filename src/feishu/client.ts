@@ -37,8 +37,17 @@ export function buildWsClient(cfg: Config): Lark.WSClient {
   });
 }
 
-export function startDispatcher(ws: Lark.WSClient, cfg: Config, router: Router): void {
-  const dispatcher = new Lark.EventDispatcher({}).register({
+export interface DispatcherExtensions {
+  cardAction?: (raw: unknown) => Promise<unknown>;
+}
+
+export function startDispatcher(
+  ws: Lark.WSClient,
+  cfg: Config,
+  router: Router,
+  ext: DispatcherExtensions = {},
+): void {
+  const handlers: Record<string, (raw: unknown) => Promise<unknown>> = {
     'im.message.receive_v1': async (raw: unknown) => {
       const data = raw as ReceiveMessageEvent;
       const meta = extractMeta(data);
@@ -58,10 +67,15 @@ export function startDispatcher(ws: Lark.WSClient, cfg: Config, router: Router):
         log().error({ err }, 'dispatch 失败');
       });
     },
-  });
+  };
 
+  if (ext.cardAction) {
+    handlers['card.action.trigger'] = ext.cardAction;
+  }
+
+  const dispatcher = new Lark.EventDispatcher({}).register(handlers);
   ws.start({ eventDispatcher: dispatcher });
-  log().info('飞书 WSClient 已启动');
+  log().info({ events: Object.keys(handlers) }, '飞书 WSClient 已启动');
 }
 
 function extractMeta(data: ReceiveMessageEvent): MessageMeta | undefined {
