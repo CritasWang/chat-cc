@@ -1,5 +1,3 @@
-import * as Lark from '@larksuiteoapi/node-sdk';
-import http from 'node:http';
 import { log } from '../logger.js';
 import type { Router } from './router.js';
 import type { CommandDeps } from '../commands/types.js';
@@ -7,10 +5,10 @@ import type { CommandDeps } from '../commands/types.js';
 /**
  * 卡片按钮回调分发。
  *
- * 飞书 Node SDK 的 CardActionHandler 走 **HTTP webhook**（同步 Toast/卡片响应在 response body 里）。
- * 我们同时把同一 dispatch 逻辑注册到 WSClient 的 `card.action.trigger`，
- * 这样可以无论飞书端怎么推都吃得到（例如审批的 side effect 解 resolver）；
- * 但显式的 Toast/card 响应只在 HTTP 路径上可靠。
+ * 飞书 WSClient 长连接推送 `card.action.trigger` 事件，
+ * EventDispatcher.invoke 调用 handler 后将返回值（Toast/Card JSON）
+ * base64 编码回写到 WS 帧 respPayload.data（sdk lib/index.js:85575-85578），
+ * 和 Go SDK `OnP2CardActionTrigger` 完全等效，无需 HTTP webhook。
  *
  * 按钮 `value` 约定：
  *   { cmd: string, args?: string, echo?: string, decision?: 'allow'|'deny' }
@@ -21,8 +19,6 @@ export interface CardActionDeps {
   router: Router;
   deps: CommandDeps;
   approvalResolver: (requestId: string, decision: 'allow' | 'deny') => boolean;
-  verificationToken?: string;
-  encryptKey?: string;
 }
 
 interface CardActionPayload {
@@ -39,48 +35,19 @@ interface ToastResponse {
   card?: unknown;
 }
 
-type HttpHandlerOptions = ConstructorParameters<typeof Lark.CardActionHandler>[0];
-
-export function buildCardActionHttpHandler(d: CardActionDeps): Lark.CardActionHandler {
-  const opts: HttpHandlerOptions = {} as HttpHandlerOptions;
-  if (d.verificationToken) (opts as { verificationToken?: string }).verificationToken = d.verificationToken;
-  if (d.encryptKey) (opts as { encryptKey?: string }).encryptKey = d.encryptKey;
-
-  return new Lark.CardActionHandler(opts, async (raw: unknown) => {
-    try {
-      return await dispatch(extractPayload(raw), d);
-    } catch (err) {
-      log().error({ err }, 'HTTP 卡片回调处理失败');
-      return toast('error', '处理失败');
-    }
-  });
-}
-
-export function buildCardActionWsHandler(
+export function buildCardActionHandler(
   d: CardActionDeps,
 ): (data: unknown) => Promise<ToastResponse> {
   return async (raw) => {
     try {
       return await dispatch(extractPayload(raw), d);
     } catch (err) {
-      log().error({ err }, 'WS 卡片回调处理失败');
+      log().error({ err }, '卡片回调处理失败');
       return toast('error', '处理失败');
     }
   };
 }
 
-export function startCardHttpServer(
-  handler: Lark.CardActionHandler,
-  port: number,
-  path: string,
-): http.Server {
-  const server = http.createServer();
-  server.on('request', Lark.adaptDefault(path, handler));
-  server.listen(port, () => log().info({ port, path }, '卡片回调 HTTP server 已启动'));
-  return server;
-}
-
-/** WS 和 HTTP 两个入口共用的分发逻辑 */
 async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<ToastResponse> {
   if (!ev.action) return toast('info', '✓');
 
@@ -117,8 +84,6 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
 function extractPayload(raw: unknown): CardActionPayload {
   if (!raw || typeof raw !== 'object') return {};
   const r = raw as Record<string, unknown>;
-  // HTTP 模式下事件包一层 { schema, header, event, action, ... }，也可能直接平铺；
-  // WS 模式下大多平铺。都兼容。
   const ev = (r['event'] as CardActionPayload | undefined) ?? (r as CardActionPayload);
   return ev;
 }
