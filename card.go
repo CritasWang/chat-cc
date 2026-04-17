@@ -36,14 +36,147 @@ type cardText struct {
 	Content string `json:"content"`
 }
 
-// cardElement supports three element types:
+// cardElement supports several schema 2.0 element types:
 //   - markdown: {tag:"markdown", content:"..."}
 //   - hr:       {tag:"hr"}
-//   - note:     已废弃(schema V2 不支持)，改用 markdown + 斜体替代
+//   - button:   {tag:"button", text:{...}, type:"primary|default|danger", behaviors:[{type:"callback", value:{...}}]}
+//   - action:   {tag:"action", actions:[buttons...]}（一行按钮组）
+//   - column_set:{tag:"column_set", columns:[{tag:"column",elements:[...]}]}
 type cardElement struct {
 	Tag      string     `json:"tag"`
 	Content  string     `json:"content,omitempty"`  // for markdown
-	Elements []cardText `json:"elements,omitempty"` // for note
+	Elements []cardText `json:"elements,omitempty"` // for note (deprecated)
+
+	// button-only
+	Text      *cardText      `json:"text,omitempty"`
+	Type      string         `json:"type,omitempty"`  // default/primary/danger/success
+	Size      string         `json:"size,omitempty"`  // tiny/small/medium/large
+	Width     string         `json:"width,omitempty"` // default/fill
+	Behaviors []cardBehavior `json:"behaviors,omitempty"`
+
+	// action-only: 一行按钮
+	Actions []cardElement `json:"actions,omitempty"`
+
+	// column_set-only
+	Columns           []cardColumn `json:"columns,omitempty"`
+	FlexMode          string       `json:"flex_mode,omitempty"`
+	BackgroundStyle   string       `json:"background_style,omitempty"`
+	HorizontalSpacing string       `json:"horizontal_spacing,omitempty"`
+}
+
+type cardColumn struct {
+	Tag           string        `json:"tag"`             // "column"
+	Width         string        `json:"width,omitempty"` // "auto" / "weighted" / "20px"
+	Weight        int           `json:"weight,omitempty"`
+	VerticalAlign string        `json:"vertical_align,omitempty"` // top/center/bottom
+	Elements      []cardElement `json:"elements"`
+}
+
+// cardBehavior is the callback/open_url/form behavior attached to a button.
+type cardBehavior struct {
+	Type   string                 `json:"type"`            // callback / open_url / form_action
+	Value  map[string]interface{} `json:"value,omitempty"` // callback payload
+	URL    string                 `json:"url,omitempty"`   // open_url
+	PcURL  string                 `json:"pc_url,omitempty"`
+	IosURL string                 `json:"ios_url,omitempty"`
+}
+
+// ButtonStyle 按钮视觉样式
+const (
+	BtnDefault = "default"
+	BtnPrimary = "primary"
+	BtnDanger  = "danger"
+	BtnSuccess = "primary_filled" // schema 2.0 保留色调，success 在 v2 走 primary_filled
+)
+
+// btn 构造一个带回调行为的按钮元素
+// value: 透传给 card.action.trigger 事件，由 card_action.go 统一解析
+func btn(text, style string, value map[string]interface{}) cardElement {
+	if style == "" {
+		style = BtnDefault
+	}
+	return cardElement{
+		Tag:   "button",
+		Text:  &cardText{Tag: "plain_text", Content: text},
+		Type:  style,
+		Size:  "medium",
+		Width: "default",
+		Behaviors: []cardBehavior{
+			{Type: "callback", Value: value},
+		},
+	}
+}
+
+// btnRow 将多个按钮水平排布为一行（schema 2.0 用 column_set，已弃用 action 标签）
+// flex_mode=wrap 允许按钮数量过多时自动换行
+func btnRow(buttons ...cardElement) cardElement {
+	columns := make([]cardColumn, len(buttons))
+	for i, b := range buttons {
+		columns[i] = cardColumn{
+			Tag:           "column",
+			Width:         "weighted",
+			Weight:        1,
+			VerticalAlign: "center",
+			Elements:      []cardElement{b},
+		}
+	}
+	return cardElement{
+		Tag:               "column_set",
+		FlexMode:          "wrap",
+		HorizontalSpacing: "8px",
+		Columns:           columns,
+	}
+}
+
+// btnGrid 把按钮数组按每行最多 cols 个拆成多行 action 元素
+func btnGrid(cols int, buttons []cardElement) []cardElement {
+	if cols <= 0 {
+		cols = 5
+	}
+	var rows []cardElement
+	for i := 0; i < len(buttons); i += cols {
+		end := i + cols
+		if end > len(buttons) {
+			end = len(buttons)
+		}
+		rows = append(rows, btnRow(buttons[i:end]...))
+	}
+	return rows
+}
+
+// keyBtn 构造发送单个按键的按钮（走 /key 命令，silent+echo 直接 Toast）
+func keyBtn(label, keyName, echoText string) cardElement {
+	return btn(label, BtnDefault, map[string]interface{}{
+		"cmd":    "key",
+		"args":   keyName,
+		"silent": true,
+		"echo":   echoText,
+	})
+}
+
+// cmdBtn 构造触发任意命令的按钮
+func cmdBtn(label, style, cmdName, args string) cardElement {
+	return btn(label, style, map[string]interface{}{
+		"cmd":  cmdName,
+		"args": args,
+	})
+}
+
+// cmdBtnRefresh 触发命令并在完成后刷新原卡片为 refreshKind 指定的视图
+func cmdBtnRefresh(label, style, cmdName, args, refreshKind string) cardElement {
+	return btn(label, style, map[string]interface{}{
+		"cmd":     cmdName,
+		"args":    args,
+		"refresh": refreshKind,
+	})
+}
+
+// toastBtn 纯 Toast 按钮（不触发命令，仅显示提示）
+func toastBtn(label, style, toast string) cardElement {
+	return btn(label, style, map[string]interface{}{
+		"echo":   toast,
+		"silent": true,
+	})
 }
 
 // buildCard assembles a schema 2.0 Feishu interactive card JSON.
@@ -325,10 +458,14 @@ func BuildLiveTerminalCard(sessionLabel, content, promptHint string) string {
 		})
 	}
 
+	// 13 键按键区 + 导航区
+	elements = append(elements, cardElement{Tag: "hr"})
+	elements = append(elements, buildTerminalKeypad()...)
+
 	// 时间戳 footer（schema V2 不支持 note，用 markdown 斜体替代）
 	elements = append(elements, cardElement{
 		Tag:     "markdown",
-		Content: fmt.Sprintf("*更新于 %s · /s 发消息 · /do 组合键*", time.Now().Format("15:04:05")),
+		Content: fmt.Sprintf("*更新于 %s · 点按钮秒杀 · /s 发消息 · /do 组合键*", time.Now().Format("15:04:05")),
 	})
 
 	title := "📺 实况终端"
@@ -337,6 +474,42 @@ func BuildLiveTerminalCard(sessionLabel, content, promptHint string) string {
 	}
 
 	return buildCard(title, "indigo", elements)
+}
+
+// buildTerminalKeypad 构造实况终端的 13 键 + 导航按钮区（共 3 行）
+//
+//	Row1 (7): ↑ ↓ ← → ␣ ↵ ⎋
+//	Row2 (6): ⇥ y n 1 2 3
+//	Row3 (3): 💬 发消息  📋 列表  ⛔ 关闭会话
+func buildTerminalKeypad() []cardElement {
+	row1 := []cardElement{
+		keyBtn("↑", "up", "已发送 ↑"),
+		keyBtn("↓", "down", "已发送 ↓"),
+		keyBtn("←", "left", "已发送 ←"),
+		keyBtn("→", "right", "已发送 →"),
+		keyBtn("␣ 空格", "space", "已发送 ␣"),
+		keyBtn("↵ 回车", "enter", "已发送 ↵"),
+		keyBtn("⎋ Esc", "esc", "已取消"),
+	}
+	row2 := []cardElement{
+		keyBtn("⇥ Tab", "tab", "已发送 ⇥"),
+		keyBtn("y", "y", "已确认 y↵"),
+		keyBtn("n", "n", "已拒绝 n↵"),
+		keyBtn("1", "1", "已选 1↵"),
+		keyBtn("2", "2", "已选 2↵"),
+		keyBtn("3", "3", "已选 3↵"),
+	}
+	row3 := []cardElement{
+		toastBtn("💬 发消息", BtnPrimary, "请发送下一条文字消息，会自动投递到当前会话"),
+		cmdBtn("📋 列表", BtnDefault, "session", "list"),
+		cmdBtnRefresh("⛔ 关闭会话", BtnDanger, "session", "stop", "session_list"),
+	}
+
+	return []cardElement{
+		btnRow(row1...),
+		btnRow(row2...),
+		btnRow(row3...),
+	}
 }
 
 // BuildSessionCompleteCard 构建「会话任务完成」通知卡片
@@ -381,10 +554,18 @@ func BuildSessionCompleteCard(sessionLabel, cwd, tail string, duration time.Dura
 		})
 	}
 
+	// 操作按钮
+	elements = append(elements, cardElement{Tag: "hr"})
+	elements = append(elements, btnRow(
+		toastBtn("💬 继续对话", BtnPrimary, "请发送下一条消息，会自动投递到此会话"),
+		cmdBtn("📋 会话列表", BtnDefault, "session", "list"),
+		cmdBtn("📺 查看实况", BtnDefault, "s", ""),
+	))
+
 	// footer（schema V2 不支持 note，用 markdown 斜体替代）
 	elements = append(elements, cardElement{
 		Tag:     "markdown",
-		Content: fmt.Sprintf("*于 %s 完成 · 使用 /s 继续对话*", time.Now().Format("2006-01-02 15:04:05")),
+		Content: fmt.Sprintf("*于 %s 完成 · 使用 /s <消息> 继续对话*", time.Now().Format("2006-01-02 15:04:05")),
 	})
 
 	return buildCard("✅ 会话已完成", "green", elements)
@@ -480,31 +661,52 @@ func BuildPromptWaitingCard(sessionLabel, tail, promptType string) string {
 
 	elements = append(elements, cardElement{Tag: "hr"})
 
-	// 根据提示类型调整快捷命令展示
-	var quickHelp string
+	// 按提示类型渲染不同的按钮组
 	switch promptType {
 	case "yn":
-		quickHelp = "**💬 快捷回复：**\n" +
-			"`/y` 允许  ·  `/n` 拒绝  ·  `/esc` 取消\n" +
-			"或使用 `/s <自定义回复>` 发送任意文本"
+		elements = append(elements, btnRow(
+			btn("✅ 允许 (y)", BtnPrimary, map[string]interface{}{
+				"cmd": "key", "args": "y", "silent": true, "echo": "已允许 y↵",
+			}),
+			btn("❌ 拒绝 (n)", BtnDanger, map[string]interface{}{
+				"cmd": "key", "args": "n", "silent": true, "echo": "已拒绝 n↵",
+			}),
+			keyBtn("⎋ 取消", "esc", "已取消"),
+		))
 	case "menu":
-		quickHelp = "**💬 快捷回复：**\n" +
-			"`/1` 选项1  ·  `/2` 选项2  ·  `/3` 选项3\n" +
-			"`/enter` 确认  ·  `/esc` 取消\n" +
-			"或使用 `/s <自定义回复>` 发送任意文本"
+		elements = append(elements, btnRow(
+			keyBtn("1", "1", "已选 1↵"),
+			keyBtn("2", "2", "已选 2↵"),
+			keyBtn("3", "3", "已选 3↵"),
+			keyBtn("↵ 确认", "enter", "已确认"),
+			keyBtn("⎋ 取消", "esc", "已取消"),
+		))
 	case "enter":
-		quickHelp = "**💬 快捷回复：**\n" +
-			"`/enter` 继续  ·  `/esc` 取消\n" +
-			"或使用 `/s <自定义回复>` 发送任意文本"
+		elements = append(elements, btnRow(
+			btn("↵ 继续", BtnPrimary, map[string]interface{}{
+				"cmd": "key", "args": "enter", "silent": true, "echo": "已继续",
+			}),
+			keyBtn("⎋ 取消", "esc", "已取消"),
+		))
 	default: // "generic"
-		quickHelp = "**💬 快捷回复：**\n" +
-			"`/y` 允许  ·  `/n` 拒绝  ·  `/enter` 回车  ·  `/esc` 取消\n" +
-			"`/1` `/2` `/3` 数字选项  ·  `/tab` Tab\n" +
-			"或使用 `/s <自定义回复>` 发送任意文本"
+		elements = append(elements, btnRow(
+			keyBtn("y", "y", "已确认 y↵"),
+			keyBtn("n", "n", "已拒绝 n↵"),
+			keyBtn("↵", "enter", "已发送 ↵"),
+			keyBtn("⎋", "esc", "已取消"),
+			keyBtn("⇥", "tab", "已发送 ⇥"),
+		))
+		elements = append(elements, btnRow(
+			keyBtn("1", "1", "已选 1↵"),
+			keyBtn("2", "2", "已选 2↵"),
+			keyBtn("3", "3", "已选 3↵"),
+		))
 	}
+
+	// 文字兜底提示
 	elements = append(elements, cardElement{
 		Tag:     "markdown",
-		Content: quickHelp,
+		Content: "*或使用 `/s <自定义回复>` 发送任意文本 · `/do 组合键` 宏指令*",
 	})
 
 	title := "⌨️ 等待输入"

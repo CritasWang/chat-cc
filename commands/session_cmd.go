@@ -94,7 +94,7 @@ func (c *SessionCommand) Execute(ctx context.Context, args string, meta *Message
 		if labelDisplay == "" {
 			labelDisplay = "(自动)"
 		}
-		return fmt.Sprintf("✅ Claude Code 会话已启动\n标签: %s\n工作目录: %s\n\n使用 /s <消息> 与 Claude 对话\n使用 /session list 查看所有会话\n使用 /session switch <标签> 切换会话\n使用 /session stop 关闭会话", labelDisplay, cwdDisplay), nil
+		return CardJSONMarker + buildSessionStartedCard(labelDisplay, cwdDisplay), nil
 
 	case "stop":
 		label := strings.TrimSpace(subArgs)
@@ -143,10 +143,7 @@ func (c *SessionCommand) Execute(ctx context.Context, args string, meta *Message
 
 	case "list", "ls":
 		sessions := c.sm.ListUserSessions(key)
-		if len(sessions) == 0 {
-			return "📋 当前没有任何会话\n\n使用 /session start [目录] 启动新会话", nil
-		}
-		return formatSessionList(sessions), nil
+		return CardJSONMarker + buildSessionListCard(sessions), nil
 
 	case "kill":
 		if subArgs == "" {
@@ -198,6 +195,78 @@ func formatSessionDetail(session SessionInfo) string {
 	sb.WriteString(fmt.Sprintf("  状态: %s", getStatusText(session.Active)))
 
 	return sb.String()
+}
+
+// buildSessionStartedCard 启动会话后的带按钮回复卡
+func buildSessionStartedCard(label, cwd string) string {
+	elements := []cuElement{
+		cuMD(fmt.Sprintf("**标签**: `%s`\n**工作目录**: `%s`", label, cwd)),
+		cuHr(),
+		cuMD("**直接操作**"),
+		cuBtnRow(
+			cuToastBtn("💬 发消息", btnStylePrimary, "请发送下一条文字消息，会自动投递到当前会话"),
+			cuCmdBtn("📋 会话列表", btnStyleDefault, "session", "list"),
+			cuCmdBtnRefresh("⛔ 关闭此会话", btnStyleDanger, "session", "stop "+label, "session_list"),
+		),
+		cuMD("*提示：后续直接发消息即可对话，或使用 `/s <消息>` 显式发送*"),
+	}
+	return cuBuild("✅ 会话已启动", "green", elements)
+}
+
+// buildSessionListCard 会话列表卡片（每会话带切换/关闭按钮）
+func buildSessionListCard(sessions []SessionInfo) string {
+	if len(sessions) == 0 {
+		elements := []cuElement{
+			cuMD("**当前没有任何会话**\n\n💡 启动新会话后可以直接发送消息与 Claude Code 交互"),
+			cuHr(),
+			cuBtnRow(
+				cuToastBtn("➕ 启动默认会话", btnStylePrimary, "请发送：/session start 或 /session start @项目别名"),
+				cuCmdBtn("📂 项目列表", btnStyleDefault, "project", ""),
+			),
+		}
+		return cuBuild("📋 会话列表", "blue", elements)
+	}
+
+	var elements []cuElement
+	activeCount := 0
+	for _, s := range sessions {
+		if s.IsActive {
+			activeCount++
+		}
+	}
+
+	elements = append(elements, cuMD(fmt.Sprintf("共 **%d** 个会话 · ▸ 标记为当前活跃", len(sessions))))
+	elements = append(elements, cuHr())
+
+	for i, session := range sessions {
+		elapsed := time.Since(session.CreatedAt)
+		marker := "  "
+		if session.IsActive {
+			marker = "▸ "
+		}
+		elements = append(elements, cuMD(fmt.Sprintf(
+			"%s**%d. [%s]** `%s`\n📁 `%s` · ⏱ %s",
+			marker, i+1, session.Label, session.Name, session.CWD, formatDuration(elapsed),
+		)))
+
+		row := []cuElement{
+			cuCmdBtnRefresh("🔀 切换", btnStylePrimary, "session", "switch "+session.Label, "session_list"),
+			cuCmdBtnRefresh("⛔ 关闭", btnStyleDanger, "session", "stop "+session.Label, "session_list"),
+		}
+		if session.IsActive {
+			row = append(row, cuToastBtn("📺 查看终端", btnStyleDefault, "已为当前活跃会话，下一张实况卡将自动刷新"))
+		}
+		elements = append(elements, cuBtnRow(row...))
+		elements = append(elements, cuHr())
+	}
+
+	elements = append(elements, cuBtnRow(
+		cuToastBtn("➕ 新建会话", btnStylePrimary, "请发送：/session start @项目别名 或 /session start --name 标签"),
+		cuCmdBtn("📂 项目", btnStyleDefault, "project", ""),
+	))
+	elements = append(elements, cuMD("*或使用 `/session new [--name 标签] [目录]` 创建命名会话*"))
+
+	return cuBuild("📋 会话列表", "blue", elements)
 }
 
 // formatSessionList 格式化会话列表（含活跃标识）

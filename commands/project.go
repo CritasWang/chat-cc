@@ -27,6 +27,9 @@ func (c *ProjectCommand) Usage() string {
 	return `/project - 列出所有配置的项目别名及其目录`
 }
 
+// 每行按钮数（避免元素数量超过飞书上限）
+const projectBtnCols = 4
+
 func (c *ProjectCommand) Execute(ctx context.Context, args string, meta *MessageMeta) (string, error) {
 	if c.config == nil {
 		return "配置未加载", nil
@@ -35,29 +38,64 @@ func (c *ProjectCommand) Execute(ctx context.Context, args string, meta *Message
 	projects := c.config.GetProjects()
 
 	if len(projects) == 0 {
-		return "📂 项目列表\n\n  (未配置任何项目)\n\n💡 提示: 在 config.yaml 中配置 projects 字段", nil
+		elements := []cuElement{
+			cuMD("**(未配置任何项目)**\n\n💡 在 config.yaml 中配置 `projects` 字段即可添加项目别名"),
+			cuHr(),
+			cuBtnRow(
+				cuCmdBtn("♻️ 重载配置", btnStylePrimary, "reload", ""),
+				cuCmdBtn("📊 查看状态", btnStyleDefault, "status", ""),
+			),
+		}
+		return CardJSONMarker + cuBuild("📂 项目列表", "blue", elements), nil
 	}
 
-	var sb strings.Builder
-	sb.WriteString("📂 项目列表\n\n")
-
-	// 按别名排序以获得一致的输出
 	aliases := make([]string, 0, len(projects))
 	for alias := range projects {
 		aliases = append(aliases, alias)
 	}
 	sort.Strings(aliases)
 
+	var elements []cuElement
+
+	// 1. 顶部说明（单 markdown）
+	elements = append(elements, cuMD(fmt.Sprintf(
+		"共 **%d** 个项目别名 · 点击 `@alias` 按钮直接启动会话 · 👁 查看路径",
+		len(projects),
+	)))
+	elements = append(elements, cuHr())
+
+	// 2. 所有项目路径合并为一块 markdown（每行一个）
+	var pathLines []string
 	for _, alias := range aliases {
-		path := projects[alias]
-		sb.WriteString(fmt.Sprintf("  @%s\n", alias))
-		sb.WriteString(fmt.Sprintf("    → %s\n\n", path))
+		pathLines = append(pathLines, fmt.Sprintf("• **@%s** · `%s`", alias, projects[alias]))
+	}
+	elements = append(elements, cuMD(strings.Join(pathLines, "\n")))
+	elements = append(elements, cuHr())
+
+	// 3. 启动按钮网格（每行 4 个）
+	var buttons []cuElement
+	for _, alias := range aliases {
+		buttons = append(buttons, cuCmdBtn(
+			"💬 @"+alias, btnStylePrimary,
+			"session", fmt.Sprintf("start --name %s @%s", alias, alias),
+		))
+	}
+	for i := 0; i < len(buttons); i += projectBtnCols {
+		end := i + projectBtnCols
+		if end > len(buttons) {
+			end = len(buttons)
+		}
+		elements = append(elements, cuBtnRow(buttons[i:end]...))
 	}
 
-	sb.WriteString(fmt.Sprintf("共 %d 个项目\n", len(projects)))
-	sb.WriteString("\n💡 使用方式:\n")
-	sb.WriteString("  /ask @项目别名 <提示词>\n")
-	sb.WriteString("  /session start @项目别名")
+	// 4. 底部操作（单行）
+	elements = append(elements, cuHr())
+	elements = append(elements, cuBtnRow(
+		cuCmdBtn("📋 会话列表", btnStyleDefault, "session", "list"),
+		cuCmdBtn("♻️ 重载", btnStyleDefault, "reload", ""),
+		cuCmdBtn("📊 状态", btnStyleDefault, "status", ""),
+	))
+	elements = append(elements, cuMD("*或使用 `/ask @别名 <提示词>` 快速问答*"))
 
-	return sb.String(), nil
+	return CardJSONMarker + cuBuild("📂 项目列表", "blue", elements), nil
 }

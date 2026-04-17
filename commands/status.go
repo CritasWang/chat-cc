@@ -39,83 +39,91 @@ func (c *StatusCommand) Description() string { return "查看本地服务和系�
 func (c *StatusCommand) Usage() string       { return `/status` }
 
 func (c *StatusCommand) Execute(ctx context.Context, args string, meta *MessageMeta) (string, error) {
-	var sb strings.Builder
-	sb.WriteString("📊 系统状态\n\n")
-
-	// 系统信息
-	sb.WriteString(fmt.Sprintf("  OS: %s/%s\n", runtime.GOOS, runtime.GOARCH))
-
-	// uptime
+	var sysLines []string
+	sysLines = append(sysLines, fmt.Sprintf("OS: `%s/%s`", runtime.GOOS, runtime.GOARCH))
 	if out, err := exec.Command("uptime").Output(); err == nil {
-		sb.WriteString(fmt.Sprintf("  Uptime: %s\n", strings.TrimSpace(string(out))))
+		sysLines = append(sysLines, fmt.Sprintf("Uptime: `%s`", strings.TrimSpace(string(out))))
 	}
-
-	// 当前工作目录
 	if c.config != nil {
-		sb.WriteString(fmt.Sprintf("\n📁 默认工作目录:\n  %s\n", c.config.GetDefaultCWD()))
+		sysLines = append(sysLines, fmt.Sprintf("默认目录: `%s`", c.config.GetDefaultCWD()))
 	}
 
-	// Claude Code 活跃会话（tmux 持久会话）
-	sb.WriteString("\n🔄 Claude Code 活跃会话:\n")
+	// Claude Code 活跃会话
+	var sessionLines []string
 	if c.sessionManager != nil {
 		sessions := c.sessionManager.ListSessions()
 		if len(sessions) > 0 {
 			for _, session := range sessions {
 				elapsed := time.Since(session.CreatedAt)
-				sb.WriteString(fmt.Sprintf("  • %s\n", session.Name))
-				sb.WriteString(fmt.Sprintf("    工作目录: %s\n", session.CWD))
-				sb.WriteString(fmt.Sprintf("    运行时间: %s\n", formatDuration(elapsed)))
+				sessionLines = append(sessionLines, fmt.Sprintf("• `%s` · `%s` · %s", session.Name, session.CWD, formatDuration(elapsed)))
 			}
-		} else {
-			sb.WriteString("  (无活跃会话)\n")
 		}
-	} else {
-		sb.WriteString("  (无会话管理器)\n")
+	}
+	if len(sessionLines) == 0 {
+		sessionLines = append(sessionLines, "*(无活跃会话)*")
 	}
 
-	// 活跃的 claude 进程（包括 /ask 产生的 claude -p 进程）
-	sb.WriteString("\n🤖 活跃 Claude 进程:\n")
+	// 活跃 Claude 进程
+	var procLines []string
 	claudeProcs := getClaudeProcesses()
-	if len(claudeProcs) > 0 {
-		for _, p := range claudeProcs {
-			sb.WriteString(fmt.Sprintf("  • [PID %s] %s (运行 %s)\n", p.pid, p.summary, p.elapsed))
-		}
-	} else {
-		sb.WriteString("  (无活跃进程)\n")
+	for _, p := range claudeProcs {
+		procLines = append(procLines, fmt.Sprintf("• [PID %s] %s · 运行 %s", p.pid, p.summary, p.elapsed))
+	}
+	if len(procLines) == 0 {
+		procLines = append(procLines, "*(无活跃进程)*")
 	}
 
-	// tmux 会话
-	sb.WriteString("\n📺 tmux 会话:\n")
+	// tmux 列表
+	tmuxOutput := "*(无活跃会话)*"
 	if out, err := exec.Command("tmux", "list-sessions").Output(); err == nil {
-		sessions := strings.TrimSpace(string(out))
-		if sessions != "" {
-			for _, line := range strings.Split(sessions, "\n") {
-				sb.WriteString(fmt.Sprintf("  %s\n", line))
-			}
+		if s := strings.TrimSpace(string(out)); s != "" {
+			tmuxOutput = "```\n" + s + "\n```"
 		}
-	} else {
-		sb.WriteString("  (无活跃会话)\n")
 	}
 
 	// Claude Code 版本
-	sb.WriteString("\n🔧 Claude Code:\n")
+	claudeVersion := "未安装或不在 PATH 中"
 	if out, err := exec.Command("claude", "--version").Output(); err == nil {
-		sb.WriteString(fmt.Sprintf("  版本: %s\n", strings.TrimSpace(string(out))))
-	} else {
-		sb.WriteString("  未安装或不在 PATH 中\n")
+		claudeVersion = strings.TrimSpace(string(out))
 	}
 
-	// Danger 模式状态
-	sb.WriteString("\n⚡ 权限模式:\n")
+	// Danger 模式
+	dangerStatus := "🔒 Danger 模式：**关闭**（使用工具白名单）"
+	dangerBtnLabel := "⚡ 开启 Danger"
+	dangerBtnStyle := btnStyleDefault
 	if c.dangerMode != nil && c.dangerMode.IsDangerMode() {
-		sb.WriteString("  ⚠️ Danger 模式: 开启（跳过所有权限检查）\n")
-	} else {
-		sb.WriteString("  🔒 Danger 模式: 关闭（使用工具白名单）\n")
+		dangerStatus = "⚠️ Danger 模式：**开启**（跳过所有权限检查）"
+		dangerBtnLabel = "🔒 关闭 Danger"
+		dangerBtnStyle = btnStyleDanger
 	}
 
-	sb.WriteString(fmt.Sprintf("\n⏱️ 查询时间: %s", time.Now().Format("2006-01-02 15:04:05")))
+	elements := []cuElement{
+		cuMD("**🖥 系统**\n" + strings.Join(sysLines, "  ·  ")),
+		cuHr(),
+		cuMD("**🔄 活跃会话**\n" + strings.Join(sessionLines, "\n")),
+		cuHr(),
+		cuMD("**🤖 Claude 进程**\n" + strings.Join(procLines, "\n")),
+		cuHr(),
+		cuMD("**📺 tmux 会话**\n" + tmuxOutput),
+		cuHr(),
+		cuMD("**🔧 Claude Code 版本**  `" + claudeVersion + "`"),
+		cuHr(),
+		cuMD(dangerStatus),
+		cuHr(),
+		cuBtnRow(
+			cuCmdBtnRefresh("🔄 刷新", btnStylePrimary, "status", "", "status"),
+			cuCmdBtnRefresh(dangerBtnLabel, dangerBtnStyle, "danger", "toggle", "status"),
+			cuCmdBtn("♻️ 重载配置", btnStyleDefault, "reload", ""),
+		),
+		cuBtnRow(
+			cuCmdBtn("📂 项目", btnStyleDefault, "project", ""),
+			cuCmdBtn("📋 会话列表", btnStyleDefault, "session", "list"),
+			cuCmdBtn("❓ 帮助", btnStyleDefault, "help", ""),
+		),
+		cuMD(fmt.Sprintf("*⏱️ 查询时间：%s*", time.Now().Format("2006-01-02 15:04:05"))),
+	}
 
-	return sb.String(), nil
+	return CardJSONMarker + cuBuild("📊 系统状态", "indigo", elements), nil
 }
 
 // claudeProcess 表示一个运行中的 claude 进程

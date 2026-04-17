@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"time"
+
+	"chatcc/commands"
 )
 
 // StatusPusher 定时将系统状态以卡片形式推送到飞书群聊
@@ -79,7 +82,13 @@ func (sp *StatusPusher) push(chatID string) {
 		return
 	}
 
-	cardJSON := TextToCard(text)
+	// /status 现在返回 CardJSONMarker + 预构建 JSON，剥离前缀直接发送
+	var cardJSON string
+	if strings.HasPrefix(text, commands.CardJSONMarker) {
+		cardJSON = strings.TrimPrefix(text, commands.CardJSONMarker)
+	} else {
+		cardJSON = TextToCard(text)
+	}
 	if _, err := sp.replier.SendCardToChat(chatID, cardJSON); err != nil {
 		log.Printf("推送状态卡片失败: %v", err)
 	} else {

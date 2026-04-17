@@ -2,13 +2,12 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 )
 
 type HelpCommand struct {
-	commands []Command // 注入所有已注册的命令
+	commands []Command
 }
 
 func NewHelpCommand() *HelpCommand {
@@ -42,85 +41,74 @@ func (c *HelpCommand) Execute(ctx context.Context, args string, meta *MessageMet
 		return fmt.Sprintf("未知命令: %s", target), nil
 	}
 
-	// 完整命令列表 → 直接构建飞书卡片 JSON（命令用 backtick 渲染为可复制 inline code）
+	// 完整命令列表 → 直接构建飞书卡片 JSON
 	return CardJSONMarker + buildHelpCard(), nil
 }
 
-// --- 飞书卡片 JSON 构建（自包含，不依赖 main 包的 card.go） ---
-
-type helpCardText struct {
-	Tag     string `json:"tag"`
-	Content string `json:"content"`
-}
-
-type helpCardElement struct {
-	Tag      string         `json:"tag"`
-	Content  string         `json:"content,omitempty"`
-	Elements []helpCardText `json:"elements,omitempty"`
-}
-
-type helpCard struct {
-	Schema string `json:"schema"`
-	Config struct {
-		WideScreenMode bool `json:"wide_screen_mode"`
-	} `json:"config"`
-	Header struct {
-		Title    helpCardText `json:"title"`
-		Template string       `json:"template"`
-	} `json:"header"`
-	Body struct {
-		Elements []helpCardElement `json:"elements"`
-	} `json:"body"`
-}
-
+// buildHelpCard 构造带交互按钮的帮助卡片
 func buildHelpCard() string {
-	elements := []helpCardElement{
-		// ⚡ 快捷操作
-		{Tag: "markdown", Content: "**⚡ 快捷操作**\n" +
-			"`/y` 允许  ·  `/n` 拒绝  ·  `/enter` 回车  ·  `/esc` 取消\n" +
-			"`/1` `/2` `/3` 数字选项  ·  `/tab` Tab"},
-		{Tag: "hr"},
+	elements := []cuElement{
+		// ⚡ 快捷按键区（直接点击发送到活跃会话）
+		cuMD("**⚡ 快捷按键**（点击发送到活跃会话）"),
+		cuBtnRow(
+			cuKeyBtn("y", "y", "已确认 y↵"),
+			cuKeyBtn("n", "n", "已拒绝 n↵"),
+			cuKeyBtn("↵", "enter", "已发送 ↵"),
+			cuKeyBtn("⎋", "esc", "已取消"),
+			cuKeyBtn("⇥", "tab", "已发送 ⇥"),
+		),
+		cuBtnRow(
+			cuKeyBtn("1", "1", "已选 1↵"),
+			cuKeyBtn("2", "2", "已选 2↵"),
+			cuKeyBtn("3", "3", "已选 3↵"),
+			cuKeyBtn("↑", "up", "已发送 ↑"),
+			cuKeyBtn("↓", "down", "已发送 ↓"),
+		),
+		cuHr(),
 
-		// 🎮 宏指令
-		{Tag: "markdown", Content: "**🎮 宏指令 /do**（秒杀 TUI 菜单）\n" +
+		// 🎯 常用功能（跳转卡片）
+		cuMD("**🎯 常用功能**"),
+		cuBtnRow(
+			cuCmdBtn("📊 状态", btnStyleDefault, "status", ""),
+			cuCmdBtn("📂 项目", btnStyleDefault, "project", ""),
+			cuCmdBtn("📋 会话", btnStyleDefault, "session", "list"),
+			cuCmdBtn("⚡ Danger", btnStyleDefault, "danger", ""),
+			cuCmdBtn("♻️ 重载", btnStyleDefault, "reload", ""),
+		),
+		cuHr(),
+
+		// 🎮 宏指令说明
+		cuMD("**🎮 宏指令 /do**（秒杀 TUI 菜单）\n" +
 			"`/do 2d sp ok`  ↓↓ 空格 回车\n" +
 			"`/do 3d sp 2d sp ok`  多选操作\n" +
-			"动作: `d`↓ `u`↑ `sp`空格 `ok`回车 `esc`取消  数字前缀=重复"},
-		{Tag: "hr"},
+			"动作: `d`↓ `u`↑ `sp`空格 `ok`回车 `esc`取消  数字前缀=重复"),
+		cuHr(),
 
 		// 💬 会话
-		{Tag: "markdown", Content: "**💬 会话交互**\n" +
+		cuMD("**💬 会话交互**\n" +
 			"`/s <消息>`  发送到活跃会话\n" +
 			"`/session start [目录]`  启动会话\n" +
 			"`/session switch <标签>`  切换  ·  `/session list`  列出\n" +
 			"`/session stop [标签]`  关闭\n" +
-			"`/key <按键> [次数]`  特殊按键 (up/down/ctrl+c...)"},
-		{Tag: "hr"},
+			"`/key <按键> [次数]`  特殊按键 (up/down/ctrl+c...)"),
+		cuHr(),
 
 		// 🤖 问答
-		{Tag: "markdown", Content: "**🤖 无状态问答**\n" +
+		cuMD("**🤖 无状态问答**\n" +
 			"`/ask <提示词>`  一次性问答\n" +
-			"`/ask @别名 <提示词>`  指定项目目录"},
-		{Tag: "hr"},
+			"`/ask @别名 <提示词>`  指定项目目录"),
+		cuHr(),
 
 		// 🛠 管理
-		{Tag: "markdown", Content: "**🛠 管理**\n" +
+		cuMD("**🛠 管理**\n" +
 			"`/status`  系统状态  ·  `/project`  项目别名\n" +
 			"`/shell <命令>`  白名单命令  ·  `/danger on|off`  权限模式\n" +
-			"`/reload`  热重载配置"},
-		{Tag: "hr"},
+			"`/reload`  热重载配置"),
+		cuHr(),
 
-		// Footer（schema V2 不支持 note，用 markdown 斜体替代）
-		{Tag: "markdown", Content: "*📺 实况转播自动运行 · 直接发消息=发到会话 · /help <命令> 查看详情*"},
+		// Footer
+		cuMD("*📺 实况转播自动运行 · 按钮直发 · 直接发消息=发到会话 · /help <命令> 查看详情*"),
 	}
 
-	card := helpCard{}
-	card.Schema = "2.0"
-	card.Config.WideScreenMode = true
-	card.Header.Title = helpCardText{Tag: "plain_text", Content: "📋 ChatCC 命令手册"}
-	card.Header.Template = "blue"
-	card.Body.Elements = elements
-
-	data, _ := json.Marshal(card)
-	return string(data)
+	return cuBuild("📋 ChatCC 命令手册", "blue", elements)
 }

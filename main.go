@@ -333,6 +333,44 @@ func runBot(configPath, logDir string) {
 	// 创建飞书事件处理器（传入 replier 和 config 用于流式推送）
 	eventHandler := NewEventHandler(cfg, router, replier)
 
+	// 注册卡片回调处理器（按钮点击 → 复用 router 分发）
+	// 通过闭包把预构建卡片生成器注入，供 refresh 场景使用
+	cardActionCtx := context.Background()
+	cmdOutput := func(cmdLine string, meta *commands.MessageMeta) string {
+		out, err := router.Dispatch(cardActionCtx, cmdLine, meta)
+		if err != nil {
+			return ""
+		}
+		if len(out) == 0 {
+			return ""
+		}
+		// 预构建卡片直接剥离 marker
+		const marker = commands.CardJSONMarker
+		if len(out) >= len(marker) && out[:len(marker)] == marker {
+			return out[len(marker):]
+		}
+		// 纯文本走 TextToCard
+		return TextToCard(out)
+	}
+	metaForBot := &commands.MessageMeta{SenderID: "", ChatID: "", ChatType: "p2p"}
+	eventHandler.OnP2CardActionTrigger(NewCardActionHandler(cardActionDeps{
+		cfg:     cfg,
+		router:  router,
+		replier: replier,
+		statusCard: func() string {
+			return cmdOutput("/status", metaForBot)
+		},
+		sessionListFn: func(meta *commands.MessageMeta) string {
+			return cmdOutput("/session list", meta)
+		},
+		projectCardFn: func() string {
+			return cmdOutput("/project", metaForBot)
+		},
+		dangerCardFn: func() string {
+			return cmdOutput("/danger", metaForBot)
+		},
+	}))
+
 	// WebSocket 客户端
 	wsLogLevel := larkcore.LogLevelInfo
 	if cfg.LogLevel == "debug" {
