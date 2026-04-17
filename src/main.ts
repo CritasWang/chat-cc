@@ -140,11 +140,19 @@ async function main(): Promise<void> {
     }),
   );
 
+  const isAllowed = (senderId: string, chatId: string): boolean => {
+    if (cfg.allowed_users.length === 0 && cfg.allowed_chats.length === 0) return true;
+    if (cfg.allowed_users.includes(senderId)) return true;
+    if (cfg.allowed_chats.includes(chatId)) return true;
+    return false;
+  };
+
   const cardHandler = buildCardActionHandler({
     router,
     deps,
     approvalResolver: (requestId: string, decision: 'allow' | 'deny') =>
       gate.resolve(requestId, decision),
+    isAllowed,
   });
 
   const ws = buildWsClient(cfg);

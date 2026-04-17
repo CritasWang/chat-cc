@@ -19,7 +19,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool }) => {
     const existing = pool.get(key);
     if (existing) {
       pool.setActive(senderKey(meta), key);
-      return `会话已存在 · ${key}\ncwd: ${cwd}\n直接用 /s <消息> 或 直接发消息`;
+      return `会话已存在 · ${key}\ncwd: ${existing.cwd}\n直接用 /s <消息> 或 直接发消息`;
     }
     pool.start({ chatId: meta.chatId, senderId: meta.senderId }, cwd);
     return `🚀 会话已启动 · ${key}\ncwd: ${cwd}\n发送消息使用 /s <消息>（或直接发文本）`;

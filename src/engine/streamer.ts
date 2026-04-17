@@ -46,7 +46,8 @@ export class LiveStreamer {
         this.schedulePatch(turn);
         break;
       case 'result':
-        turn.state.phase = 'done';
+        turn.state.phase = ev.ok ? 'done' : 'error';
+        if (!ev.ok) turn.state.error = ev.text || '执行失败';
         turn.state.usage = ev.usage;
         turn.state.durationMs = ev.durationMs;
         await this.flushNow(turn);

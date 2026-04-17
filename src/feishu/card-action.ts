@@ -19,6 +19,7 @@ export interface CardActionDeps {
   router: Router;
   deps: CommandDeps;
   approvalResolver: (requestId: string, decision: 'allow' | 'deny') => boolean;
+  isAllowed: (senderId: string, chatId: string) => boolean;
 }
 
 interface CardActionPayload {
@@ -51,12 +52,18 @@ export function buildCardActionHandler(
 async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<ToastResponse> {
   if (!ev.action) return toast('info', '✓');
 
+  const senderId = ev.operator?.open_id ?? '';
+  const chatId = ev.open_chat_id ?? ev.context?.open_chat_id ?? '';
+
+  if (!d.isAllowed(senderId, chatId)) {
+    log().warn({ senderId, chatId }, '卡片回调权限拒绝');
+    return toast('error', '未授权');
+  }
+
   const value = normalizeValue(ev.action.value);
   const cmd = String(value['cmd'] ?? '');
   const args = String(value['args'] ?? '');
   const echo = typeof value['echo'] === 'string' ? value['echo'] : undefined;
-  const senderId = ev.operator?.open_id ?? '';
-  const chatId = ev.open_chat_id ?? ev.context?.open_chat_id ?? '';
   const messageId = ev.open_message_id ?? ev.context?.open_message_id ?? '';
 
   if (cmd === '__approve') {
