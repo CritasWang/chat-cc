@@ -1,6 +1,6 @@
 import type { UsageSnapshot } from '../../engine/events.js';
 import type { InteractiveCard } from '../replier.js';
-import { card, divider, header, markdown } from './base.js';
+import { card, cardHeader, hr, md } from './base.js';
 
 export interface CostReport {
   totals: UsageSnapshot;
@@ -12,7 +12,7 @@ export function renderCostCard(r: CostReport): InteractiveCard {
   const elems: unknown[] = [];
   const t = r.totals;
   elems.push(
-    markdown(
+    md(
       `**总计**\n` +
         `- input: \`${fmt(t.inputTokens)}\`\n` +
         `- output: \`${fmt(t.outputTokens)}\`\n` +
@@ -23,15 +23,15 @@ export function renderCostCard(r: CostReport): InteractiveCard {
   );
 
   if (r.byThread.length > 0) {
-    elems.push(divider());
+    elems.push(hr());
     const lines = r.byThread.map(
       (t) =>
         `• \`${t.threadKey}\` — in ${fmt(t.usage.inputTokens)} · out ${fmt(t.usage.outputTokens)} · cache-r ${fmt(t.usage.cacheReadTokens)}`,
     );
-    elems.push(markdown('**按会话**\n' + lines.join('\n')));
+    elems.push(md('**按会话**\n' + lines.join('\n')));
   }
 
-  return card(header('💰 Token / Cost', 'purple'), elems);
+  return card(cardHeader('💰 Token / Cost', 'purple'), elems);
 }
 
 function fmt(n: number): string {

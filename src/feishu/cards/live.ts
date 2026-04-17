@@ -1,6 +1,6 @@
 import type { UsageSnapshot } from '../../engine/events.js';
 import type { InteractiveCard } from '../replier.js';
-import { buttonRow, card, divider, header, markdown } from './base.js';
+import { btnRow, card, cardHeader, cmdBtn, hr, md } from './base.js';
 
 export interface LiveCardState {
   threadKey: string;
@@ -18,27 +18,27 @@ export function renderLiveCard(state: LiveCardState): InteractiveCard {
   const elems: unknown[] = [];
 
   if (state.assistantBuf) {
-    elems.push(markdown(truncate(state.assistantBuf, 4500)));
+    elems.push(md(truncate(state.assistantBuf, 4500)));
   }
 
   if (state.currentTool) {
-    elems.push(divider());
-    elems.push(markdown(`🛠 **${state.currentTool.name}**\n\`\`\`\n${truncate(state.currentTool.input, 800)}\n\`\`\``));
+    elems.push(hr());
+    elems.push(md(`🛠 **${state.currentTool.name}**\n\`\`\`\n${truncate(state.currentTool.input, 800)}\n\`\`\``));
   }
 
   if (state.toolResults > 0 && state.phase === 'streaming') {
-    elems.push(markdown(`_已完成 ${state.toolResults} 次工具调用_`));
+    elems.push(md(`_已完成 ${state.toolResults} 次工具调用_`));
   }
 
   if (state.phase === 'error' && state.error) {
-    elems.push(divider());
-    elems.push(markdown(`⚠️ **错误**: ${truncate(state.error, 800)}`));
+    elems.push(hr());
+    elems.push(md(`⚠️ **错误**: ${truncate(state.error, 800)}`));
   }
 
   if (state.phase !== 'streaming' && state.usage) {
-    elems.push(divider());
+    elems.push(hr());
     elems.push(
-      markdown(
+      md(
         `tokens · in ${state.usage.inputTokens} · out ${state.usage.outputTokens} · cache-r ${state.usage.cacheReadTokens} · cache-c ${state.usage.cacheCreationTokens}${state.durationMs ? ` · ${(state.durationMs / 1000).toFixed(1)}s` : ''}`,
       ),
     );
@@ -46,20 +46,20 @@ export function renderLiveCard(state: LiveCardState): InteractiveCard {
 
   if (state.phase === 'done') {
     elems.push(
-      buttonRow([
-        { text: '📋 查看会话', value: { cmd: 'session', args: 'list', echo: '已列出' } },
-        { text: '🛑 停止会话', value: { cmd: 'session', args: `stop ${state.threadKey}` }, type: 'danger' },
+      btnRow([
+        cmdBtn('📋 查看会话', 'session', 'list'),
+        cmdBtn('🛑 停止会话', 'session', `stop ${state.threadKey}`, 'danger'),
       ]),
     );
   } else if (state.phase === 'streaming') {
     elems.push(
-      buttonRow([
-        { text: '⏹ 中断', value: { cmd: 'stop', args: state.threadKey }, type: 'danger' },
+      btnRow([
+        cmdBtn('⏹ 中断', 'stop', state.threadKey, 'danger'),
       ]),
     );
   }
 
-  return card(header(titleFor(state), colorFor(state)), elems);
+  return card(cardHeader(titleFor(state), colorFor(state)), elems);
 }
 
 function titleFor(state: LiveCardState): string {

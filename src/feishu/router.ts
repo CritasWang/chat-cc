@@ -1,5 +1,6 @@
 import type { CommandDeps, CommandFn } from '../commands/types.js';
 import type { Replier } from './replier.js';
+import { textCard } from './cards/base.js';
 
 export interface MessageMeta {
   messageId: string;
@@ -41,15 +42,14 @@ export class Router {
       const args = spaceIdx < 0 ? '' : rest.slice(spaceIdx + 1);
       const cmd = this.cmds.get(name);
       if (!cmd) {
-        await this.replier.replyText(meta.messageId, `未知命令: /${name}\n输入 /help 查看可用命令`);
+        await this.replyAsCard(meta.messageId, `未知命令: /${name}\n输入 /help 查看可用命令`);
         return;
       }
       const result = await cmd.fn(args, meta, this.deps);
-      if (result) await this.replier.replyText(meta.messageId, result);
+      if (result) await this.replyAsCard(meta.messageId, result);
       return;
     }
 
-    // 非命令消息：优先转活跃会话，否则回退 /ask
     const sendCmd = this.cmds.get('s');
     if (sendCmd) {
       const result = await sendCmd.fn(trimmed, meta, this.deps);
@@ -58,12 +58,19 @@ export class Router {
           const ask = this.cmds.get('ask');
           if (ask) {
             const r = await ask.fn(trimmed, meta, this.deps);
-            if (r) await this.replier.replyText(meta.messageId, r);
+            if (r) await this.replyAsCard(meta.messageId, r);
             return;
           }
         }
-        await this.replier.replyText(meta.messageId, result);
+        await this.replyAsCard(meta.messageId, result);
       }
+    }
+  }
+
+  private async replyAsCard(messageId: string, text: string): Promise<void> {
+    const ok = await this.replier.replyCard(messageId, textCard(text));
+    if (!ok) {
+      await this.replier.replyText(messageId, text);
     }
   }
 }

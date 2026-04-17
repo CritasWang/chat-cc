@@ -1,14 +1,7 @@
 import type { CommandFn } from './types.js';
+import { renderStatusCard } from '../feishu/cards/status.js';
 
-export const statusCommand: CommandFn = async (_args, _meta, { cfg, pool }) => {
-  const sessions = pool.list();
-  const lines = [
-    '📊 chatcc v3 状态',
-    `cwd (默认): ${cfg.default_cwd}`,
-    `许可用户: ${cfg.allowed_users.length || '不限'}`,
-    `许可群聊: ${cfg.allowed_chats.length || '不限'}`,
-    `活跃会话: ${sessions.length}`,
-    `持久化目录: ${cfg.persistence_dir}`,
-  ];
-  return lines.join('\n');
+export const statusCommand: CommandFn = async (_args, meta, { cfg, pool, replier }) => {
+  await replier.replyCard(meta.messageId, renderStatusCard(cfg, pool));
+  return;
 };

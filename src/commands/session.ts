@@ -1,13 +1,9 @@
 import { resolveCwd } from '../config.js';
 import { threadKey } from '../engine/pool.js';
+import { renderSessionListCard } from '../feishu/cards/session.js';
 import { senderKey, type CommandFn } from './types.js';
 
-/**
- * /session start [@alias|path]   — 起一个新会话（复用当前 thread 的 key）
- * /session stop [threadKey]      — 停止一个会话（默认停活跃）
- * /session list                  — 列出所有会话
- */
-export const sessionCommand: CommandFn = async (args, meta, { cfg, pool }) => {
+export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier }) => {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   const sub = (parts[0] ?? 'list').toLowerCase();
   const rest = parts.slice(1).join(' ');
@@ -32,15 +28,8 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool }) => {
   }
 
   if (sub === 'list') {
-    const items = pool.list();
-    if (items.length === 0) return '当前无活跃会话，使用 /session start 开启';
-    const active = pool.getActive(senderKey(meta))?.threadKey;
-    const lines = items.map((it) => {
-      const marker = it.threadKey === active ? '● ' : '  ';
-      const sid = it.sessionId ? it.sessionId.slice(0, 8) : '-';
-      return `${marker}${it.threadKey}  (sid ${sid}, ${it.lastUsed.toISOString()})`;
-    });
-    return '会话列表:\n' + lines.join('\n');
+    await replier.replyCard(meta.messageId, renderSessionListCard(pool, senderKey(meta)));
+    return;
   }
 
   return '用法: /session <start|stop|list> [args]';
