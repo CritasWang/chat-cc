@@ -1,7 +1,14 @@
-chatcc
+node_modules/
+dist/
+data/
+*.tsbuildinfo
+
 config.local.yaml
 *.local.*
 .env
+
 logs/
 *.pid
+
+.DS_Store
 .omc/

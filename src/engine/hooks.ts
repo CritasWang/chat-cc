@@ -1,0 +1,97 @@
+import type { HookCallbackMatcher, CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import { log } from '../logger.js';
+import { renderApprovalCard, renderApprovalResolved, type ApprovalCardSpec } from '../feishu/cards/approval.js';
+import type { Replier } from '../feishu/replier.js';
+
+/** Pending 审批表：requestId → { resolve, spec, messageId } */
+interface PendingApproval {
+  resolve: (decision: 'allow' | 'deny') => void;
+  spec: ApprovalCardSpec;
+  messageId?: string;
+}
+
+export interface ApprovalGate {
+  /** 供 canUseTool 调用：打开审批卡片，等用户点按钮 */
+  request: (spec: ApprovalCardSpec, chatId: string, timeoutMs: number) => Promise<'allow' | 'deny'>;
+  /** 供 CardActionHandler 调用：用户按下按钮时 resolve */
+  resolve: (requestId: string, decision: 'allow' | 'deny') => boolean;
+  /** 清空（退出/测试） */
+  clear: () => void;
+}
+
+export function createApprovalGate(replier: Replier): ApprovalGate {
+  const pending = new Map<string, PendingApproval>();
+
+  return {
+    async request(spec, chatId, timeoutMs) {
+      const mid = await replier.sendCard(chatId, renderApprovalCard(spec));
+      return new Promise<'allow' | 'deny'>((resolve) => {
+        const rec: PendingApproval = { resolve, spec };
+        if (mid) rec.messageId = mid;
+        pending.set(spec.requestId, rec);
+
+        if (timeoutMs > 0) {
+          setTimeout(() => {
+            const r = pending.get(spec.requestId);
+            if (!r) return;
+            pending.delete(spec.requestId);
+            log().warn({ requestId: spec.requestId, tool: spec.toolName }, '审批超时，默认 deny');
+            r.resolve('deny');
+          }, timeoutMs);
+        }
+      });
+    },
+
+    resolve(requestId, decision) {
+      const rec = pending.get(requestId);
+      if (!rec) return false;
+      pending.delete(requestId);
+      rec.resolve(decision);
+      if (rec.messageId) {
+        void replier.patchCard(rec.messageId, renderApprovalResolved(rec.spec, decision));
+      }
+      return true;
+    },
+
+    clear() {
+      for (const rec of pending.values()) rec.resolve('deny');
+      pending.clear();
+    },
+  };
+}
+
+export interface HookBuildOptions {
+  threadKey: string;
+  chatId: string;
+  gate: ApprovalGate;
+  autoApprovePatterns: RegExp[];
+  timeoutMs: number;
+}
+
+/** 构建 canUseTool 回调：直接对接审批卡片 */
+export function buildCanUseTool(opts: HookBuildOptions): CanUseTool {
+  return async (toolName, input): Promise<PermissionResult> => {
+    if (opts.autoApprovePatterns.some((r) => r.test(toolName))) {
+      return { behavior: 'allow', updatedInput: input };
+    }
+    const requestId = `${opts.threadKey}:${toolName}:${Date.now()}`;
+    const preview = previewJson(input);
+    const decision = await opts.gate.request(
+      { requestId, toolName, toolInputPreview: preview, threadKey: opts.threadKey },
+      opts.chatId,
+      opts.timeoutMs,
+    );
+    if (decision === 'allow') return { behavior: 'allow', updatedInput: input };
+    return { behavior: 'deny', message: '用户在飞书端拒绝' };
+  };
+}
+
+/** 额外 hook：PreToolUse / Stop，占位给 M5 cost 日志用 */
+export function buildHookMatchers(): Record<string, HookCallbackMatcher[]> {
+  return {};
+}
+
+function previewJson(v: unknown): string {
+  const s = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+  return s.length > 1500 ? s.slice(0, 1500) + '…' : s;
+}
