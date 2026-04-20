@@ -1,5 +1,6 @@
 import { log } from '../logger.js';
 import { renderLiveCard, type LiveCardState } from '../feishu/cards/live.js';
+import { renderAskUserCard, parseAskUserInput } from '../feishu/cards/ask-user.js';
 import type { Replier } from '../feishu/replier.js';
 import type { EngineEvent, UsageSnapshot } from './events.js';
 
@@ -37,6 +38,12 @@ export class LiveStreamer {
         this.schedulePatch(turn);
         break;
       case 'tool-use':
+        if (ev.name === 'AskUserQuestion') {
+          const questions = parseAskUserInput(ev.input);
+          if (questions.length > 0) {
+            await this.deps.replier.sendCard(turn.chatId, renderAskUserCard(turn.threadKey, questions));
+          }
+        }
         turn.state.currentTool = { name: ev.name, input: previewJson(ev.input) };
         this.schedulePatch(turn);
         break;
