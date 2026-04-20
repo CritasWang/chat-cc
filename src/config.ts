@@ -34,7 +34,7 @@ const ConfigSchema = z.object({
 
   approval_timeout_ms: z.number().int().positive().default(120_000),
   /** 自动允许的工具名正则（按工具名匹配） */
-  auto_approve_tools: z.array(z.string()).default(['^(Read|Glob|Grep|LS|WebFetch|WebSearch|TodoWrite)$']),
+  auto_approve_tools: z.array(z.string()).default(['^(Read|Glob|Grep|LS|LSP|WebFetch|WebSearch|TodoWrite|AskUserQuestion|TaskCreate|TaskUpdate|TaskList|TaskGet|NotebookRead|PushNotification)$']),
 
   mcp_feishu_rate_limit_ms: z.number().int().nonnegative().default(10_000),
 
