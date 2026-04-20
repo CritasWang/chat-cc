@@ -6,6 +6,7 @@ export function renderHelpCard(): InteractiveCard {
     md('**🎯 常用功能**'),
     btnRow([
       cmdBtn('📊 状态', 'status', ''),
+      cmdBtn('📂 项目', 'project', ''),
       cmdBtn('📋 会话', 'session', 'list'),
       cmdBtn('💰 用量', 'usage', ''),
     ]),
@@ -30,10 +31,16 @@ export function renderHelpCard(): InteractiveCard {
 
     md(
       '**🛠 管理**\n' +
-        '`/status`  系统状态\n' +
-        '`/usage`  Token/Cost 看板\n' +
-        '`/ping`  健康检查',
+        '`/status`  系统状态  ·  `/project`  项目别名\n' +
+        '`/danger on|off`  权限模式  ·  `/reload`  热重载配置\n' +
+        '`/usage`  Token/Cost 看板  ·  `/ping`  健康检查',
     ),
+    hr(),
+
+    btnRow([
+      cmdBtn('⚡ Danger', 'danger', ''),
+      cmdBtn('♻️ 重载', 'reload', ''),
+    ]),
     hr(),
 
     md('*📺 实况转播自动运行 · 卡片按钮直接触发 · 直接发消息=发到活跃会话 · /help <命令> 查看详情*'),

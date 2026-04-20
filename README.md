@@ -2,6 +2,17 @@
 
 **Chat**（聊天）+ **CC**（Claude Code + Command）— 通过飞书消息远程操控 Claude Code 和本地程序。
 
+## 为什么 v3 从 Go 切换到 TypeScript
+
+v2 用 Go 编写，通过 tmux 子进程 + `capture-pane` 轮询 + ANSI 转义码正则清洗来与 Claude Code 交互。这条路径有几个系统性瓶颈：
+
+- **Claude Agent SDK 没有 Go 版本** — 官方只提供 TypeScript / Python，Go 只能走 CLI 子进程，无法使用 `canUseTool`（工具审批回调）、`mcpServers`（in-process MCP）、`resume`（会话恢复）等 SDK 独占能力
+- **ANSI 屏幕抓取脆弱** — `stripANSI` 正则无法覆盖所有 TUI 输出变体，Claude Code 版本更新时交互检测频繁误判
+- **轮询延迟不可消除** — 0.5s 稳定检测 + 3s 实况刷新 + 5s 监控扫描，三套定时器叠加；SDK 的事件流天然是 push 模型
+- **中断不精确** — tmux `send-keys` 模拟 Ctrl-C 可能被 TUI 吞掉或延迟
+
+切到 TypeScript 后，直接使用 `@anthropic-ai/claude-agent-sdk` 的 `query()` async generator，获得结构化 JSON 事件流、in-process hooks、MCP server 注册、`interrupt()`、`resume` 等全部一等公民能力。飞书侧 `@larksuiteoapi/node-sdk` 的 WSClient + EventDispatcher + CardActionHandler 生态也同样成熟。
+
 ## 特性
 
 - **WebSocket 长连接**: 无需公网 IP，本地直接运行

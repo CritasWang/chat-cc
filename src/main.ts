@@ -20,6 +20,8 @@ import { statusCommand } from './commands/status.js';
 import { helpCommand } from './commands/help.js';
 import { stopCommand } from './commands/stop.js';
 import { makeUsageCommand } from './commands/usage.js';
+import { projectCommand } from './commands/project.js';
+import { dangerCommand, reloadCommand } from './commands/danger.js';
 
 async function main(): Promise<void> {
   const cfgPath =
@@ -129,6 +131,9 @@ async function main(): Promise<void> {
   router.register('session', sessionCommand, ['ses']);
   router.register('s', sendCommand);
   router.register('stop', stopCommand);
+  router.register('project', projectCommand, ['proj']);
+  router.register('danger', dangerCommand);
+  router.register('reload', reloadCommand);
   router.register(
     'usage',
     makeUsageCommand({
