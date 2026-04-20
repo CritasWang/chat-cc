@@ -12,6 +12,7 @@ module.exports = {
       max_memory_restart: '512M',
       env: {
         NODE_ENV: 'production',
+        CHATCC_CONFIG: './config.local.yaml',
       },
       error_file: 'logs/chatcc-v3.err.log',
       out_file: 'logs/chatcc-v3.out.log',
