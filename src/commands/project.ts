@@ -16,8 +16,8 @@ export const projectCommand: CommandFn = async (_args, meta, { cfg, replier }) =
   elements.push(md(`共 **${keys.length}** 个项目别名`));
   elements.push(hr());
 
-  // 每个项目一行 markdown + 一行按钮，控制总元素数
-  const MAX_INLINE = 15;
+  // 每个项目一行 markdown + 一行按钮（2 个），飞书卡片对按钮总数有限制
+  const MAX_INLINE = 8;
   const inlineKeys = keys.slice(0, MAX_INLINE);
 
   for (const k of inlineKeys) {
