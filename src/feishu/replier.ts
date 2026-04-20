@@ -26,54 +26,78 @@ export class Replier {
     }
   }
 
-  async sendText(chatId: string, text: string): Promise<string | undefined> {
-    try {
-      const resp = await this.client.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'text',
-          content: JSON.stringify({ text }),
-        },
-      });
-      return resp.data?.message_id;
-    } catch (err) {
-      log().error({ err, chatId }, '发送文本失败');
-      return undefined;
+  async sendText(chatId: string, text: string, retries = 2): Promise<string | undefined> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const resp = await this.client.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: chatId,
+            msg_type: 'text',
+            content: JSON.stringify({ text }),
+          },
+        });
+        return resp.data?.message_id;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (attempt < retries && (msg.includes('ECONN') || msg.includes('EOF') || msg.includes('timeout') || msg.includes('RESET'))) {
+          await delay(300 * 2 ** attempt);
+          continue;
+        }
+        log().error({ err, chatId }, '发送文本失败');
+        return undefined;
+      }
     }
+    return undefined;
   }
 
-  async sendCard(chatId: string, card: InteractiveCard): Promise<string | undefined> {
-    try {
-      const resp = await this.client.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'interactive',
-          content: JSON.stringify(card),
-        },
-      });
-      return resp.data?.message_id;
-    } catch (err) {
-      log().error({ err, chatId }, '发送卡片失败');
-      return undefined;
+  async sendCard(chatId: string, card: InteractiveCard, retries = 2): Promise<string | undefined> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const resp = await this.client.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: chatId,
+            msg_type: 'interactive',
+            content: JSON.stringify(card),
+          },
+        });
+        return resp.data?.message_id;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (attempt < retries && (msg.includes('ECONN') || msg.includes('EOF') || msg.includes('timeout') || msg.includes('RESET'))) {
+          await delay(300 * 2 ** attempt);
+          continue;
+        }
+        log().error({ err, chatId }, '发送卡片失败');
+        return undefined;
+      }
     }
+    return undefined;
   }
 
-  async replyCard(rootMessageId: string, card: InteractiveCard): Promise<string | undefined> {
-    try {
-      const resp = await this.client.im.v1.message.reply({
-        path: { message_id: rootMessageId },
-        data: {
-          msg_type: 'interactive',
-          content: JSON.stringify(card),
-        },
-      });
-      return resp.data?.message_id;
-    } catch (err) {
-      log().error({ err, rootMessageId }, '回复卡片失败');
-      return undefined;
+  async replyCard(rootMessageId: string, card: InteractiveCard, retries = 2): Promise<string | undefined> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const resp = await this.client.im.v1.message.reply({
+          path: { message_id: rootMessageId },
+          data: {
+            msg_type: 'interactive',
+            content: JSON.stringify(card),
+          },
+        });
+        return resp.data?.message_id;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (attempt < retries && (msg.includes('ECONN') || msg.includes('EOF') || msg.includes('timeout') || msg.includes('RESET'))) {
+          await delay(300 * 2 ** attempt);
+          continue;
+        }
+        log().error({ err, rootMessageId }, '回复卡片失败');
+        return undefined;
+      }
     }
+    return undefined;
   }
 
   async patchCard(messageId: string, card: InteractiveCard, retries = 2): Promise<boolean> {
