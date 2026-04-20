@@ -20,7 +20,7 @@ export interface CardActionDeps {
   deps: CommandDeps;
   approvalResolver: (requestId: string, decision: 'allow' | 'deny') => boolean;
   isAllowed: (senderId: string, chatId: string) => boolean;
-  renderRefreshCard?: (refresh: string, chatId: string) => unknown | undefined;
+  renderRefreshCard?: (refresh: string, chatId: string, senderId: string) => unknown | undefined;
 }
 
 interface CardActionPayload {
@@ -79,6 +79,19 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
 
   if (!cmd) return toast('info', echo ?? '✓');
 
+  // refresh 场景：先执行命令（静默，不走 router 的回复），再原地刷新卡片
+  if (refresh && d.renderRefreshCard && messageId) {
+    // 对于 stop 类命令，直接走 pool.stop（不经 router 避免双重回复）
+    if (cmd === 'session' && args.startsWith('stop')) {
+      const target = args.replace(/^stop\s*/, '').trim();
+      if (target) await d.deps.pool.stop(target, { keepMeta: false });
+    }
+    const refreshedCard = d.renderRefreshCard(refresh, chatId, senderId);
+    if (refreshedCard) {
+      return { toast: { type: 'success', content: echo ?? '✓' }, card: refreshedCard };
+    }
+  }
+
   const cmdLine = args ? `/${cmd} ${args}` : `/${cmd}`;
   await d.router.dispatch(cmdLine, {
     messageId,
@@ -87,13 +100,6 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
     senderId,
     mentionBot: true,
   });
-
-  if (refresh && d.renderRefreshCard && messageId) {
-    const refreshedCard = d.renderRefreshCard(refresh, chatId);
-    if (refreshedCard) {
-      return { toast: { type: 'success', content: echo ?? '✓' }, card: refreshedCard };
-    }
-  }
 
   return toast('success', echo ?? '✓');
 }

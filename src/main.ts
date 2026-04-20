@@ -167,13 +167,14 @@ async function main(): Promise<void> {
     approvalResolver: (requestId: string, decision: 'allow' | 'deny') =>
       gate.resolve(requestId, decision),
     isAllowed,
-    renderRefreshCard: (refresh, _chatId) => {
+    renderRefreshCard: (refresh, _chatId, senderId) => {
+      const userKey = senderId || _chatId;
       switch (refresh) {
         case 'status':
           return renderStatusCard(cfg, pool);
         case 'session_list':
         case 'sessions':
-          return renderSessionListCard(pool, '');
+          return renderSessionListCard(pool, userKey);
         case 'help':
           return renderHelpCard();
         default:
