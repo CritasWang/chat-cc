@@ -1,7 +1,18 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
+import https from 'node:https';
+import http from 'node:http';
+import axios from 'axios';
 import type { Config } from '../config.js';
 import { log } from '../logger.js';
 import type { Router, MessageMeta } from './router.js';
+
+const keepAliveHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 20, keepAliveMsecs: 30_000 });
+const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 20, keepAliveMsecs: 30_000 });
+const httpInstance = axios.create({
+  httpsAgent: keepAliveHttpsAgent,
+  httpAgent: keepAliveHttpAgent,
+  timeout: 30_000,
+});
 
 interface TextContent {
   text: string;
@@ -26,6 +37,7 @@ export function buildClient(cfg: Config): Lark.Client {
     appId: cfg.app_id,
     appSecret: cfg.app_secret,
     disableTokenCache: false,
+    httpInstance: httpInstance as never,
   });
 }
 
