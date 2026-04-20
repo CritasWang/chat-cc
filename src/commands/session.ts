@@ -23,7 +23,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
 
   if (sub === 'stop') {
     const target = rest || pool.getActive(senderKey(meta))?.threadKey || key;
-    const ok = await pool.stop(target);
+    const ok = await pool.stop(target, { keepMeta: false });
     return ok ? `🛑 已停止 · ${target}` : `会话不存在 · ${target}`;
   }
 

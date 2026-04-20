@@ -69,6 +69,7 @@ export function translateSdkMessage(msg: SDKMessage): EngineEvent[] {
       subtype?: string;
       is_error?: boolean;
       result?: string;
+      errors?: string[];
       duration_ms?: number;
       usage?: {
         input_tokens?: number;
@@ -78,10 +79,14 @@ export function translateSdkMessage(msg: SDKMessage): EngineEvent[] {
       };
       modelUsage?: Record<string, unknown>;
     };
+    const errorDetail = Array.isArray(m.errors) && m.errors.length > 0
+      ? m.errors.join('\n')
+      : '';
+    const text = m.result || errorDetail || '';
     out.push({
       kind: 'result',
       ok: !m.is_error,
-      text: m.result ?? '',
+      text,
       durationMs: m.duration_ms ?? 0,
       usage: m.usage
         ? {

@@ -6,6 +6,7 @@ import { Session, type SessionConfig } from './session.js';
 export interface PoolDeps {
   buildConfig: (threadKey: string, cwd: string, resumeId?: string) => SessionConfig;
   onEvent: (threadKey: string, e: EngineEvent) => void | Promise<void>;
+  onStop?: (threadKey: string, keepMeta: boolean) => void;
   /** 空闲多久自动 disconnect（毫秒）；<=0 表示关闭 */
   idleTimeoutMs?: number;
   idleCheckIntervalMs?: number;
@@ -146,6 +147,7 @@ export class SessionPool {
 
   async stop(key: string, { keepMeta = true } = {}): Promise<boolean> {
     const s = this.sessions.get(key);
+    if (!s && !this.meta.has(key)) return false;
     if (s) {
       await s.close();
       this.sessions.delete(key);
@@ -154,7 +156,8 @@ export class SessionPool {
       if (k === key) this.activeByUser.delete(u);
     }
     if (!keepMeta) this.meta.delete(key);
-    return Boolean(s);
+    this.deps.onStop?.(key, keepMeta);
+    return true;
   }
 
   async closeAll(): Promise<void> {

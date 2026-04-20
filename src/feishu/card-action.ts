@@ -20,6 +20,7 @@ export interface CardActionDeps {
   deps: CommandDeps;
   approvalResolver: (requestId: string, decision: 'allow' | 'deny') => boolean;
   isAllowed: (senderId: string, chatId: string) => boolean;
+  renderRefreshCard?: (refresh: string, chatId: string) => unknown | undefined;
 }
 
 interface CardActionPayload {
@@ -64,6 +65,7 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
   const cmd = String(value['cmd'] ?? '');
   const args = String(value['args'] ?? '');
   const echo = typeof value['echo'] === 'string' ? value['echo'] : undefined;
+  const refresh = typeof value['refresh'] === 'string' ? value['refresh'] : undefined;
   const messageId = ev.open_message_id ?? ev.context?.open_message_id ?? '';
 
   if (cmd === '__approve') {
@@ -85,6 +87,14 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
     senderId,
     mentionBot: true,
   });
+
+  if (refresh && d.renderRefreshCard && messageId) {
+    const refreshedCard = d.renderRefreshCard(refresh, chatId);
+    if (refreshedCard) {
+      return { toast: { type: 'success', content: echo ?? '✓' }, card: refreshedCard };
+    }
+  }
+
   return toast('success', echo ?? '✓');
 }
 

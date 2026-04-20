@@ -13,6 +13,9 @@ import { Persistence, type PersistedSession } from './engine/persistence.js';
 import { createApprovalGate, buildCanUseTool } from './engine/hooks.js';
 import { buildFeishuMcpServer } from './mcp/feishu-server.js';
 import { buildCardActionHandler } from './feishu/card-action.js';
+import { renderStatusCard } from './feishu/cards/status.js';
+import { renderSessionListCard } from './feishu/cards/session.js';
+import { renderHelpCard } from './feishu/cards/help.js';
 import { askCommand } from './commands/ask.js';
 import { sessionCommand } from './commands/session.js';
 import { sendCommand } from './commands/send.js';
@@ -63,15 +66,8 @@ async function main(): Promise<void> {
     },
   });
 
-  const monitor = new Monitor(replier, cfg.status_push_chat_id || cfg.notify_chat_id);
-
-  const autoApprovePatterns = cfg.auto_approve_tools.map((s) => new RegExp(s));
-  const mcpServer = buildFeishuMcpServer({
-    replier,
-    defaultChatId: cfg.notify_chat_id,
-    allowedChats: cfg.allowed_chats,
-    perChatRateLimitMs: cfg.mcp_feishu_rate_limit_ms,
-  });
+  const monitor = new Monitor(replier);
+  const getNotifyChatId = () => cfg.status_push_chat_id || cfg.notify_chat_id;
 
   const pool = new SessionPool({
     idleTimeoutMs: cfg.idle_timeout_minutes * 60_000,
@@ -79,8 +75,17 @@ async function main(): Promise<void> {
 
     buildConfig: (threadKey, cwd, resumeId) => {
       const { chatId } = parseThreadKey(threadKey);
+
+      const currentAutoApprove = cfg.auto_approve_tools.map((s) => new RegExp(s));
+      const currentMcpServer = buildFeishuMcpServer({
+        replier,
+        defaultChatId: cfg.notify_chat_id,
+        allowedChats: cfg.allowed_chats,
+        perChatRateLimitMs: cfg.mcp_feishu_rate_limit_ms,
+      });
+
       const extra: Record<string, unknown> = {
-        mcpServers: { feishu: mcpServer },
+        mcpServers: { feishu: currentMcpServer },
       };
       if (cfg.claude_danger_mode) {
         extra['allowDangerouslySkipPermissions'] = true;
@@ -89,7 +94,7 @@ async function main(): Promise<void> {
           threadKey,
           chatId,
           gate,
-          autoApprovePatterns,
+          autoApprovePatterns: currentAutoApprove,
           timeoutMs: cfg.approval_timeout_ms,
         });
       }
@@ -103,6 +108,10 @@ async function main(): Promise<void> {
       };
     },
 
+    onStop: (threadKey, keepMeta) => {
+      if (!keepMeta) persistence.delete(threadKey);
+    },
+
     onEvent: async (threadKey, ev: EngineEvent) => {
       const { chatId } = parseThreadKey(threadKey);
       if (ev.kind === 'init') {
@@ -110,7 +119,7 @@ async function main(): Promise<void> {
       }
       await streamer.onEvent(chatId, threadKey, ev);
       if (ev.kind === 'result') {
-        await monitor.onResult(threadKey, ev.usage, ev.durationMs);
+        await monitor.onResult(threadKey, ev.usage, ev.durationMs, getNotifyChatId());
         persistSession(threadKey);
       }
     },
@@ -158,6 +167,19 @@ async function main(): Promise<void> {
     approvalResolver: (requestId: string, decision: 'allow' | 'deny') =>
       gate.resolve(requestId, decision),
     isAllowed,
+    renderRefreshCard: (refresh, _chatId) => {
+      switch (refresh) {
+        case 'status':
+          return renderStatusCard(cfg, pool);
+        case 'session_list':
+        case 'sessions':
+          return renderSessionListCard(pool, '');
+        case 'help':
+          return renderHelpCard();
+        default:
+          return undefined;
+      }
+    },
   });
 
   const ws = buildWsClient(cfg);
