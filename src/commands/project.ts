@@ -16,16 +16,23 @@ export const projectCommand: CommandFn = async (_args, meta, { cfg, replier }) =
   elements.push(md(`共 **${keys.length}** 个项目别名`));
   elements.push(hr());
 
-  for (const k of keys) {
-    elements.push(md(`**@${k}**\n\`${projects[k]}\``));
+  // 每个项目一行 markdown + 一行按钮，控制总元素数
+  const MAX_INLINE = 15;
+  const inlineKeys = keys.slice(0, MAX_INLINE);
+
+  for (const k of inlineKeys) {
+    elements.push(md(`**@${k}** · \`${projects[k]}\``));
     elements.push(btnRow([
-      cmdBtn(`🚀 开启会话`, 'session', `start @${k}`),
-      cmdBtn(`🤖 提问`, 'ask', `@${k} `),
+      cmdBtn('🚀 开启会话', 'session', `start @${k}`),
+      cmdBtn('🤖 提问', 'ask', `@${k} `),
     ]));
-    elements.push(hr());
   }
 
-  elements.push(md('*使用 `/ask @别名 <问题>` 或 `/session start @别名` 快速访问*'));
+  if (keys.length > MAX_INLINE) {
+    elements.push(hr());
+    const rest = keys.slice(MAX_INLINE).map((k) => `\`@${k}\``).join(' · ');
+    elements.push(md(`更多别名: ${rest}\n使用 \`/session start @别名\` 访问`));
+  }
 
   await replier.replyCard(meta.messageId, card(cardHeader('📂 项目别名', 'blue'), elements));
 };
