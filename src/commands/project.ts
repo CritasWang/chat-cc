@@ -12,19 +12,20 @@ export const projectCommand: CommandFn = async (_args, meta, { cfg, replier }) =
     return;
   }
 
-  const lines = keys.map((k) => `• \`@${k}\` → \`${projects[k]}\``);
-  await replier.replyCard(
-    meta.messageId,
-    card(cardHeader('📂 项目别名', 'blue'), [
-      md(`共 **${keys.length}** 个别名\n\n${lines.join('\n')}`),
-      hr(),
-      md('**使用方式**\n`/ask @别名 <问题>`  或  `/session start @别名`'),
-      hr(),
-      btnRow([
-        cmdBtn('📊 状态', 'status', ''),
-        cmdBtn('📋 会话', 'session', 'list'),
-        cmdBtn('❓ 帮助', 'help', ''),
-      ]),
-    ]),
-  );
+  const elements: unknown[] = [];
+  elements.push(md(`共 **${keys.length}** 个项目别名`));
+  elements.push(hr());
+
+  for (const k of keys) {
+    elements.push(md(`**@${k}**\n\`${projects[k]}\``));
+    elements.push(btnRow([
+      cmdBtn(`🚀 开启会话`, 'session', `start @${k}`),
+      cmdBtn(`🤖 提问`, 'ask', `@${k} `),
+    ]));
+    elements.push(hr());
+  }
+
+  elements.push(md('*使用 `/ask @别名 <问题>` 或 `/session start @别名` 快速访问*'));
+
+  await replier.replyCard(meta.messageId, card(cardHeader('📂 项目别名', 'blue'), elements));
 };
