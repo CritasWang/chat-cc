@@ -49,7 +49,10 @@ export function renderStatusCard(cfg: Config, pool: SessionPool): InteractiveCar
     btnRow([
       cmdBtnRefresh('🔄 刷新', 'status', '', 'status', 'primary'),
       cmdBtn('📋 会话列表', 'session', 'list'),
+    ]),
+    btnRow([
       cmdBtn('❓ 帮助', 'help', ''),
+      cmdBtn('📂 项目', 'project', ''),
     ]),
     md(`*⏱️ ${now}*`),
   ]);

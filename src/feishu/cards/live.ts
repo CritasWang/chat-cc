@@ -55,6 +55,7 @@ export function renderLiveCard(state: LiveCardState): InteractiveCard {
     elems.push(
       btnRow([
         cmdBtn('⏹ 中断', 'stop', state.threadKey, 'danger'),
+        { label: ' ', style: 'default' as const, value: {} },
       ]),
     );
   }

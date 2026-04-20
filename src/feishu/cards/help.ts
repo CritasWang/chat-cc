@@ -7,6 +7,8 @@ export function renderHelpCard(): InteractiveCard {
     btnRow([
       cmdBtn('📊 状态', 'status', ''),
       cmdBtn('📂 项目', 'project', ''),
+    ]),
+    btnRow([
       cmdBtn('📋 会话', 'session', 'list'),
       cmdBtn('💰 用量', 'usage', ''),
     ]),
