@@ -1,6 +1,7 @@
 import { log } from '../logger.js';
 import type { Router } from './router.js';
 import type { CommandDeps } from '../commands/types.js';
+import { parseThreadKey, normalizeSlot } from '../engine/pool.js';
 
 /**
  * 卡片按钮回调分发。
@@ -81,14 +82,37 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
 
   // refresh 场景：先执行命令（静默，不走 router 的回复），再原地刷新卡片
   if (refresh && d.renderRefreshCard && messageId) {
-    // 对于 stop 类命令，直接走 pool.stop（不经 router 避免双重回复）
-    if (cmd === 'session' && args.startsWith('stop')) {
-      const target = args.replace(/^stop\s*/, '').trim();
-      if (target) await d.deps.pool.stop(target, { keepMeta: false });
+    // 会话操作需要把 slot 名解析为完整 threadKey
+    if (cmd === 'session' && (args.startsWith('stop') || args.startsWith('switch'))) {
+      const isStop = args.startsWith('stop');
+      const target = args.replace(/^(stop|switch)\s*/, '').trim();
+      if (target) {
+        const scoped = d.deps.pool.listByScope(chatId, senderId);
+        const slot = normalizeSlot(target);
+        const hit = scoped.find((s) => parseThreadKey(s.threadKey).slot === slot);
+        if (hit) {
+          if (isStop) {
+            await d.deps.pool.stop(hit.threadKey, { keepMeta: false });
+          } else {
+            // switch: 若只有 meta（恢复态）则 lazy start，否则仅切换 active
+            const parsed = parseThreadKey(hit.threadKey);
+            const meta = d.deps.pool.getMeta(hit.threadKey);
+            if (meta && !d.deps.pool.get(hit.threadKey)) {
+              d.deps.pool.start(
+                { chatId: parsed.chatId, senderId: parsed.senderId, slot: parsed.slot },
+                meta.cwd,
+              );
+            } else {
+              const userKey = senderId || chatId;
+              d.deps.pool.setActive(userKey, hit.threadKey);
+            }
+          }
+        }
+      }
     }
     const refreshedCard = d.renderRefreshCard(refresh, chatId, senderId);
     if (refreshedCard) {
-      return { toast: { type: 'success', content: echo ?? '✓' }, card: refreshedCard };
+      return { toast: { type: 'success', content: echo ?? '✓' }, card: { type: 'raw', data: refreshedCard } };
     }
   }
 

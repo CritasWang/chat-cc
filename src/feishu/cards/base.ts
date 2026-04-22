@@ -103,6 +103,6 @@ export function card(h: Record<string, unknown>, elements: unknown[]): Interacti
 }
 
 /** 把纯文本包装成一张简单卡片 */
-export function textCard(text: string, title = 'ChatCC', color: CardColor = 'blue'): InteractiveCard {
+export function textCard(text: string, title = '📬 回复', color: CardColor = 'blue'): InteractiveCard {
   return card(cardHeader(title, color), [md(text)]);
 }

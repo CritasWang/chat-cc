@@ -12,6 +12,8 @@ export interface LiveCardState {
   usage?: UsageSnapshot;
   durationMs?: number;
   interrupted?: boolean;
+  /** stateless=true 时不显示会话相关按钮（用于 /ask 等无状态场景） */
+  stateless?: boolean;
 }
 
 export function renderLiveCard(state: LiveCardState): InteractiveCard {
@@ -45,12 +47,22 @@ export function renderLiveCard(state: LiveCardState): InteractiveCard {
   }
 
   if (state.phase === 'done') {
-    elems.push(
-      btnRow([
-        cmdBtn('📋 查看会话', 'session', 'list'),
-        cmdBtn('🛑 停止会话', 'session', `stop ${state.threadKey}`, 'danger'),
-      ]),
-    );
+    if (state.stateless) {
+      elems.push(
+        btnRow([
+          cmdBtn('📂 项目', 'project', ''),
+          cmdBtn('📋 会话', 'session', 'list'),
+          cmdBtn('🟢 当前', 'session', 'current'),
+        ]),
+      );
+    } else {
+      elems.push(
+        btnRow([
+          cmdBtn('📋 查看会话', 'session', 'list'),
+          cmdBtn('🛑 停止会话', 'session', `stop ${state.threadKey}`, 'danger'),
+        ]),
+      );
+    }
   } else if (state.phase === 'streaming') {
     elems.push(
       btnRow([

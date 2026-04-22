@@ -4,7 +4,7 @@ import { initLogger, log } from './logger.js';
 import { buildClient, buildWsClient, startDispatcher } from './feishu/client.js';
 import { Replier } from './feishu/replier.js';
 import { Router } from './feishu/router.js';
-import { SessionPool, type ThreadKey } from './engine/pool.js';
+import { SessionPool, parseThreadKey } from './engine/pool.js';
 import type { EngineEvent } from './engine/events.js';
 import { LiveStreamer } from './engine/streamer.js';
 import { Monitor } from './engine/monitor.js';
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   const persistence = new Persistence(cfg.persistence_dir);
   const gate = createApprovalGate(replier);
 
-  const persistSession = (tk: string): void => {
+  const persistSession = (tk: string, wasActive?: boolean): void => {
     const meta = pool.getMeta(tk);
     if (!meta) return;
     const payload: PersistedSession = {
@@ -55,6 +55,7 @@ async function main(): Promise<void> {
       cost: cost.get(tk),
     };
     if (meta.sessionId) payload.sessionId = meta.sessionId;
+    if (wasActive) payload.wasActive = true;
     persistence.save(payload);
   };
 
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
       await streamer.onEvent(chatId, threadKey, ev);
       if (ev.kind === 'result') {
         await monitor.onResult(threadKey, ev.usage, ev.durationMs, getNotifyChatId());
-        persistSession(threadKey);
+        persistSession(threadKey, pool.isActiveForAnyUser(threadKey));
       }
     },
   });
@@ -167,14 +168,18 @@ async function main(): Promise<void> {
     approvalResolver: (requestId: string, decision: 'allow' | 'deny') =>
       gate.resolve(requestId, decision),
     isAllowed,
-    renderRefreshCard: (refresh, _chatId, senderId) => {
-      const userKey = senderId || _chatId;
+    renderRefreshCard: (refresh, chatId, senderId) => {
+      const userKey = senderId || chatId;
       switch (refresh) {
         case 'status':
           return renderStatusCard(cfg, pool);
         case 'session_list':
         case 'sessions':
-          return renderSessionListCard(pool, userKey);
+          return renderSessionListCard(
+            pool,
+            { messageId: '', chatId, chatType: '', senderId, mentionBot: false },
+            userKey,
+          );
         case 'help':
           return renderHelpCard();
         default:
@@ -190,7 +195,7 @@ async function main(): Promise<void> {
     log().info({ sig }, '收到信号，关闭');
     gate.clear();
     for (const item of pool.list()) {
-      if (item.active) persistSession(item.threadKey);
+      if (item.active) persistSession(item.threadKey, pool.isActiveForAnyUser(item.threadKey));
     }
     await pool.closeAll().catch((err) => log().error({ err }, 'closeAll 失败'));
     process.exit(0);
@@ -199,11 +204,6 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
-function parseThreadKey(tk: string): ThreadKey {
-  const idx = tk.indexOf(':');
-  if (idx < 0) return { chatId: tk, senderId: '' };
-  return { chatId: tk.slice(0, idx), senderId: tk.slice(idx + 1) };
-}
 
 main().catch((err) => {
   console.error('fatal:', err);

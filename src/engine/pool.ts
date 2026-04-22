@@ -15,10 +15,39 @@ export interface PoolDeps {
 export interface ThreadKey {
   chatId: string;
   senderId: string;
+  /** 同一 user+chat 下的槽位名，用于多会话并存（不传则为 "default"） */
+  slot?: string;
 }
 
+export const DEFAULT_SLOT = 'default';
+
 export function threadKey(k: ThreadKey): string {
-  return `${k.chatId}:${k.senderId}`;
+  return `${k.chatId}:${k.senderId}:${k.slot || DEFAULT_SLOT}`;
+}
+
+export function parseThreadKey(tk: string): Required<ThreadKey> {
+  const parts = tk.split(':');
+  if (parts.length >= 3) {
+    return {
+      chatId: parts[0] ?? '',
+      senderId: parts[1] ?? '',
+      slot: parts.slice(2).join(':') || DEFAULT_SLOT,
+    };
+  }
+  if (parts.length === 2) {
+    return { chatId: parts[0] ?? '', senderId: parts[1] ?? '', slot: DEFAULT_SLOT };
+  }
+  return { chatId: tk, senderId: '', slot: DEFAULT_SLOT };
+}
+
+export function userKeyOf(k: ThreadKey): string {
+  return k.senderId || k.chatId;
+}
+
+/** 规范化 slot 名：只保留 URL-friendly 字符 */
+export function normalizeSlot(raw: string): string {
+  const s = (raw || '').trim().replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/-+/g, '-');
+  return s || DEFAULT_SLOT;
 }
 
 interface ThreadMeta {
@@ -44,17 +73,41 @@ export class SessionPool {
 
   /** 从磁盘预热：加载会话 metadata，但不 spawn Session，lazy 等用户再来 */
   prewarm(persisted: PersistedSession[]): void {
+    let migrated = 0;
     for (const p of persisted) {
       if (!p.threadKey) continue;
-      this.meta.set(p.threadKey, {
-        threadKey: p.threadKey,
+      // 兼容旧的 2 段 threadKey：升级到 3 段 slot=default
+      let tk = p.threadKey;
+      if (tk.split(':').length < 3) {
+        tk = `${tk}:${DEFAULT_SLOT}`;
+        migrated += 1;
+      }
+      this.meta.set(tk, {
+        threadKey: tk,
         ...(p.sessionId ? { sessionId: p.sessionId } : {}),
         cwd: p.cwd || '.',
         createdAt: p.createdAt ? new Date(p.createdAt) : new Date(),
         lastUsedAt: p.lastUsedAt ? new Date(p.lastUsedAt) : new Date(),
       });
     }
-    log().info({ loaded: persisted.length }, 'pool 预热完成');
+    // 恢复 activeByUser：找到标记为 wasActive 的会话
+    for (const p of persisted) {
+      if (!p.wasActive || !p.threadKey) continue;
+      let ptk = p.threadKey;
+      if (ptk.split(':').length < 3) ptk = `${ptk}:${DEFAULT_SLOT}`;
+      const parsed = parseThreadKey(ptk);
+      const userKey = parsed.senderId || parsed.chatId;
+      this.activeByUser.set(userKey, ptk);
+    }
+    log().info({ loaded: persisted.length, migrated, activeUsers: this.activeByUser.size }, 'pool 预热完成');
+  }
+
+  /** 返回某个用户在某个群内的所有会话（活跃 + 仅有 meta 的） */
+  listByScope(chatId: string, senderId: string): ReturnType<SessionPool['list']> {
+    return this.list().filter((s) => {
+      const p = parseThreadKey(s.threadKey);
+      return p.chatId === chatId && p.senderId === senderId;
+    });
   }
 
   list(): Array<{ threadKey: string; sessionId?: string; cwd: string; lastUsed: Date; active: boolean }> {
@@ -95,6 +148,14 @@ export class SessionPool {
 
   setActive(userKey: string, threadKey: string): void {
     this.activeByUser.set(userKey, threadKey);
+  }
+
+  /** 检查某个 threadKey 是否为任意用户的活跃会话 */
+  isActiveForAnyUser(threadKey: string): boolean {
+    for (const k of this.activeByUser.values()) {
+      if (k === threadKey) return true;
+    }
+    return false;
   }
 
   getSessionId(threadKey: string): string | undefined {
@@ -148,15 +209,16 @@ export class SessionPool {
   async stop(key: string, { keepMeta = true } = {}): Promise<boolean> {
     const s = this.sessions.get(key);
     if (!s && !this.meta.has(key)) return false;
-    if (s) {
-      await s.close();
-      this.sessions.delete(key);
-    }
+    // 先从池里摘除再等 close；若 close() 因 SDK pump 卡死挂住，后续 start 也能直接新建
+    if (s) this.sessions.delete(key);
     for (const [u, k] of this.activeByUser) {
       if (k === key) this.activeByUser.delete(u);
     }
     if (!keepMeta) this.meta.delete(key);
     this.deps.onStop?.(key, keepMeta);
+    if (s) {
+      await s.close().catch((err) => log().warn({ err, threadKey: key }, 'session close 异常（已忽略）'));
+    }
     return true;
   }
 

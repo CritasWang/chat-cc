@@ -83,8 +83,14 @@ export class LiveStreamer {
     let turn = this.turns.get(threadKey);
     if (turn) return turn;
 
-    // 只在"确实要显示"的事件发生时才创建卡片
-    if (ev.kind !== 'assistant-text' && ev.kind !== 'tool-use') return undefined;
+    // 会话级事件发生时即起占位卡片（init 即给"已连接"反馈，避免冷启动期间用户无感知）
+    if (
+      ev.kind !== 'assistant-text' &&
+      ev.kind !== 'tool-use' &&
+      ev.kind !== 'init'
+    ) {
+      return undefined;
+    }
 
     turn = {
       chatId,

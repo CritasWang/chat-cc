@@ -1,12 +1,17 @@
-import type { SessionPool } from '../../engine/pool.js';
+import { parseThreadKey, type SessionPool } from '../../engine/pool.js';
+import type { MessageMeta } from '../router.js';
 import type { InteractiveCard } from '../replier.js';
 import { btnRow, card, cardHeader, cmdBtn, cmdBtnRefresh, hr, md, toastBtn } from './base.js';
 
-export function renderSessionListCard(pool: SessionPool, userKey: string): InteractiveCard {
-  const sessions = pool.list();
+export function renderSessionListCard(
+  pool: SessionPool,
+  meta: MessageMeta,
+  userKey: string,
+): InteractiveCard {
+  const scoped = pool.listByScope(meta.chatId, meta.senderId);
   const activeKey = pool.getActive(userKey)?.threadKey;
 
-  if (sessions.length === 0) {
+  if (scoped.length === 0) {
     return card(cardHeader('📋 会话列表', 'blue'), [
       md('**当前没有任何会话**\n\n💡 启动新会话后可以直接发送消息与 Claude Code 交互'),
       hr(),
@@ -17,24 +22,31 @@ export function renderSessionListCard(pool: SessionPool, userKey: string): Inter
   }
 
   const elements: unknown[] = [];
-  elements.push(md(`共 **${sessions.length}** 个会话 · ▸ 标记为当前活跃`));
+  elements.push(md(`共 **${scoped.length}** 个会话 · ▸ 标记为当前活跃`));
   elements.push(hr());
 
-  for (let i = 0; i < sessions.length; i++) {
-    const s = sessions[i]!;
-    const marker = s.threadKey === activeKey ? '▸ ' : '  ';
+  for (let i = 0; i < scoped.length; i++) {
+    const s = scoped[i]!;
+    const { slot } = parseThreadKey(s.threadKey);
+    const isActive = s.threadKey === activeKey;
+    const marker = isActive ? '▸ ' : '  ';
     const statusIcon = s.active ? '🟢' : '⚪';
     const sid = s.sessionId ? s.sessionId.slice(0, 8) : '-';
     const elapsed = timeSince(s.lastUsed);
 
     elements.push(
-      md(`${marker}**${i + 1}. ${statusIcon}** \`${s.threadKey}\`\n📁 \`${s.cwd}\` · sid \`${sid}\` · ⏱ ${elapsed}`),
+      md(
+        `${marker}**${i + 1}. ${statusIcon}** \`${slot}\`\n` +
+          `📁 \`${s.cwd}\` · sid \`${sid}\` · ⏱ ${elapsed}`,
+      ),
     );
-    elements.push(
-      btnRow([
-        cmdBtnRefresh('⛔ 关闭', 'session', `stop ${s.threadKey}`, 'session_list', 'danger'),
-      ]),
-    );
+
+    const btns = [];
+    if (!isActive) {
+      btns.push(cmdBtnRefresh('▶ 激活', 'session', `switch ${slot}`, 'session_list', 'primary'));
+    }
+    btns.push(cmdBtnRefresh('⛔ 关闭', 'session', `stop ${slot}`, 'session_list', 'danger'));
+    elements.push(btnRow(btns));
     elements.push(hr());
   }
 

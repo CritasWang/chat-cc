@@ -10,6 +10,8 @@ export interface PersistedSession {
   createdAt: string;
   lastUsedAt: string;
   cost: UsageSnapshot;
+  /** 该会话在持久化时是否为用户的活跃会话 */
+  wasActive?: boolean;
 }
 
 export class Persistence {
