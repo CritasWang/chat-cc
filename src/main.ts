@@ -1,6 +1,6 @@
-import { existsSync } from 'node:fs';
-import { loadConfig } from './config.js';
+import { loadConfig, resolveConfigPath, getConfigMeta } from './config.js';
 import { initLogger, log } from './logger.js';
+import { logPath } from './paths.js';
 import { buildClient, buildWsClient, startDispatcher } from './feishu/client.js';
 import { Replier } from './feishu/replier.js';
 import { Router } from './feishu/router.js';
@@ -26,12 +26,20 @@ import { makeUsageCommand } from './commands/usage.js';
 import { projectCommand } from './commands/project.js';
 import { dangerCommand, reloadCommand } from './commands/danger.js';
 
-async function main(): Promise<void> {
-  const cfgPath =
-    process.env['CHATCC_CONFIG'] ??
-    (existsSync('./config.local.yaml') ? './config.local.yaml' : './config.yaml');
+export async function main(opts?: { foreground?: boolean }): Promise<void> {
+  const cfgPath = resolveConfigPath();
   const cfg = loadConfig(cfgPath);
-  const logger = initLogger(cfg.log_level);
+
+  const foreground = opts?.foreground ?? process.stdout.isTTY;
+  const logger = initLogger({
+    level: cfg.log_level,
+    filePath: foreground ? undefined : logPath(),
+  });
+
+  const meta = getConfigMeta(cfg);
+  if (meta.usedLegacy) {
+    logger.warn({ path: meta.path }, '正在使用旧路径配置文件，建议迁移到 ~/.chat-cc/config.yaml（运行 chat-cc init）');
+  }
 
   if (!cfg.app_id || !cfg.app_secret) {
     logger.fatal('未配置 app_id / app_secret（config.yaml 或环境变量 FEISHU_APP_ID / FEISHU_APP_SECRET）');
@@ -205,7 +213,9 @@ async function main(): Promise<void> {
 }
 
 
-main().catch((err) => {
-  console.error('fatal:', err);
-  process.exit(1);
-});
+if (process.env['CHAT_CC_DAEMON'] === '1' || !process.argv[1]?.includes('cli')) {
+  main().catch((err) => {
+    console.error('fatal:', err);
+    process.exit(1);
+  });
+}

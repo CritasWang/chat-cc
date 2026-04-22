@@ -1,18 +1,33 @@
 {
-  "name": "chatcc",
-  "version": "3.0.0-alpha.1",
-  "description": "飞书 ↔ Claude Code 网关（v3：Claude Agent SDK + headless）",
-  "private": true,
+  "name": "chat-cc",
+  "version": "3.0.0",
+  "description": "飞书 ↔ Claude Code 网关 — Lark Bot 一键接入 Claude Code",
   "type": "module",
   "engines": {
     "node": ">=20.11"
   },
   "bin": {
-    "chatcc": "dist/main.js"
+    "chat-cc": "dist/cli/index.js",
+    "chatcc": "dist/cli/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "feishu",
+    "lark",
+    "claude",
+    "claude-code",
+    "chatbot",
+    "gateway",
+    "agent-sdk"
+  ],
+  "license": "MIT",
   "scripts": {
     "dev": "tsx watch src/main.ts",
-    "start": "node dist/main.js",
+    "start": "node dist/cli/index.js start --foreground",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"

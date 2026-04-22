@@ -1,3 +1,8 @@
+// ---------------------------------------------------------------
+// 可选方案：使用 PM2 管理进程（替代内置 chat-cc start 守护进程）
+// 用法：pm2 start ecosystem.config.cjs
+// 推荐：优先使用 chat-cc start（内置 daemon），PM2 仅作高级替代
+// ---------------------------------------------------------------
 module.exports = {
   apps: [
     {
@@ -12,7 +17,8 @@ module.exports = {
       max_memory_restart: '512M',
       env: {
         NODE_ENV: 'production',
-        CHATCC_CONFIG: './config.local.yaml',
+        CHAT_CC_DAEMON: '1',
+        CHAT_CC_CONFIG: './config.local.yaml',
       },
       error_file: 'logs/chatcc-v3.err.log',
       out_file: 'logs/chatcc-v3.out.log',

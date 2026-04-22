@@ -1,5 +1,43 @@
 # Changelog
 
+## v3.0.0 (2026-04-22)
+
+从 alpha 到正式版：CLI 产品化，一行安装即可使用。
+
+### Added
+
+- **CLI 全局命令** — `npm install -g chat-cc` 后提供 `chat-cc` / `chatcc` 命令
+- **`chat-cc init`** — 交互式配置向导，生成 `~/.chat-cc/config.yaml`
+- **`chat-cc start/stop/restart`** — 内置守护进程（fork + PID 文件 + signal），无需 PM2
+- **`chat-cc status`** — 进程状态 + 运行时间
+- **`chat-cc logs [-f] [-n]`** — 日志查看/跟踪
+- **`chat-cc config <get|set|edit|path>`** — 配置管理
+- **`chat-cc doctor`** — 环境健康检查（Node 版本、claude CLI、飞书凭证）
+- **`chat-cc version`** — 版本信息
+- **`~/.chat-cc/` 用户目录** — 配置、PID、日志、会话数据统一存放，项目目录零污染
+- **配置路径优先级** — `$CHAT_CC_CONFIG` > `$CHAT_CC_HOME/config.yaml` > `~/.chat-cc/config.yaml` > `./config.local.yaml`（兼容）
+- **旧路径兼容** — 检测到 `./config.local.yaml` 时自动 fallback 并 warn 迁移
+- **日志双模式** — 后台写文件（`~/.chat-cc/chat-cc.log`），前台 pino-pretty 到 stdout
+- **`/ask` 流式卡片** — 流式输出 + 多会话并存支持
+- **`/session switch/current`** — 会话切换命令
+- **`/project` 项目别名管理卡片** — 内联按钮启动会话/提问（按钮数限制 8 个）
+- **`/danger` `/reload` 命令** — 重新引入危险模式切换和热重载
+- **`AskUserQuestion` 选项卡片** — 将 Claude 的交互问题渲染为飞书选项卡片
+- **卡片全面化** — schema 2.0 按钮体系
+- **Lark HTTP Keep-Alive** — 连接复用，降低请求延迟
+- **API 指数退避重试** — 处理 ECONNRESET/EOF 错误
+- **PM2 进程管理支持** — `ecosystem.config.cjs` 可选支持（现已被内置守护进程替代）
+
+### Changed
+
+- `package.json` name 改为 `chat-cc`，不再 private
+- `bin` 入口改为 `dist/cli/index.js`
+- `npm run start` 改为前台模式启动（`chat-cc start --foreground`）
+- `persistence_dir` 默认值从 `./data/sessions` 改为 `~/.chat-cc/sessions`
+- `loadConfig()` 支持无参调用（自动解析路径优先级）
+
+---
+
 ## v3.0.0-alpha.1 (2026-04-17)
 
 全量重写：Go + tmux → TypeScript + Claude Agent SDK。

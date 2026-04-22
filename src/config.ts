@@ -1,6 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
+import { configPath as defaultConfigPath, sessionsDir } from './paths.js';
 
 const ConfigSchema = z.object({
   app_id: z.string().default(''),
@@ -28,12 +29,11 @@ const ConfigSchema = z.object({
 
   stream_throttle_ms: z.number().int().positive().default(500),
 
-  persistence_dir: z.string().default('./data/sessions'),
+  persistence_dir: z.string().default(''),
   idle_timeout_minutes: z.number().int().nonnegative().default(30),
   idle_check_seconds: z.number().int().positive().default(60),
 
   approval_timeout_ms: z.number().int().positive().default(120_000),
-  /** 自动允许的工具名正则（按工具名匹配） */
   auto_approve_tools: z.array(z.string()).default(['^(Read|Glob|Grep|LS|LSP|WebFetch|WebSearch|TodoWrite|AskUserQuestion|TaskCreate|TaskUpdate|TaskList|TaskGet|NotebookRead|PushNotification)$']),
 
   mcp_feishu_rate_limit_ms: z.number().int().nonnegative().default(10_000),
@@ -43,23 +43,54 @@ const ConfigSchema = z.object({
 
 export type Config = z.infer<typeof ConfigSchema>;
 
-export function loadConfig(path: string): Config {
+const LEGACY_PATHS = ['./config.local.yaml', './config.yaml'];
+
+export function resolveConfigPath(): string {
+  const envPath = process.env['CHAT_CC_CONFIG'];
+  if (envPath) return envPath;
+
+  const home = defaultConfigPath();
+  if (existsSync(home)) return home;
+
+  for (const legacy of LEGACY_PATHS) {
+    if (existsSync(legacy)) return legacy;
+  }
+
+  return home;
+}
+
+export function loadConfig(path?: string): Config {
+  const cfgPath = path ?? resolveConfigPath();
   let raw: unknown = {};
+  let usedLegacy = false;
+
   try {
-    raw = parseYaml(readFileSync(path, 'utf8')) ?? {};
+    raw = parseYaml(readFileSync(cfgPath, 'utf8')) ?? {};
+    usedLegacy = LEGACY_PATHS.includes(cfgPath);
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
 
   const cfg = ConfigSchema.parse(raw);
 
+  if (!cfg.persistence_dir) {
+    cfg.persistence_dir = sessionsDir();
+  }
+
   const envId = process.env['FEISHU_APP_ID'];
   const envSecret = process.env['FEISHU_APP_SECRET'];
-  return {
+  const result = {
     ...cfg,
     app_id: envId?.length ? envId : cfg.app_id,
     app_secret: envSecret?.length ? envSecret : cfg.app_secret,
   };
+
+  return { ...result, _cfgPath: cfgPath, _usedLegacy: usedLegacy } as Config;
+}
+
+export function getConfigMeta(cfg: Config): { path: string; usedLegacy: boolean } {
+  const meta = cfg as Config & { _cfgPath?: string; _usedLegacy?: boolean };
+  return { path: meta._cfgPath ?? 'unknown', usedLegacy: meta._usedLegacy ?? false };
 }
 
 export function resolveCwd(cfg: Config, input: string): string {
