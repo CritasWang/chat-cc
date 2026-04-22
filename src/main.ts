@@ -135,7 +135,7 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
     if (s.cost) cost.add(s.threadKey, s.cost);
   }
 
-  const deps = { cfg, pool, replier, streamer, gate };
+  const deps = { cfg, pool, replier, streamer, gate, configPath: cfgPath };
   const router = new Router(replier, deps);
   router.register('ping', async () => `pong · chatcc v3 · ${new Date().toISOString()}`);
   router.register('help', helpCommand, ['h']);
@@ -168,7 +168,7 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
       const userKey = senderId || chatId;
       switch (refresh) {
         case 'status':
-          return renderStatusCard(cfg, pool);
+          return renderStatusCard(cfg, pool, cfgPath);
         case 'session_list':
         case 'sessions':
           return renderSessionListCard(

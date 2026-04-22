@@ -11,6 +11,7 @@ export interface CommandDeps {
   replier: Replier;
   streamer: LiveStreamer;
   gate: ApprovalGate;
+  configPath: string;
 }
 
 export type CommandFn = (args: string, meta: MessageMeta, deps: CommandDeps) => Promise<string | void>;
