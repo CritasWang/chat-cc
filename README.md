@@ -2,304 +2,197 @@
 
 **Chat**（聊天）+ **CC**（Claude Code + Command）— 通过飞书消息远程操控 Claude Code 和本地程序。
 
+以 npm 全局包形式分发，内置守护进程管理，无需 PM2 或手动 nohup。
+
 ## 特性
 
-- **WebSocket 长连接**: 无需公网 IP，本地直接运行
-- **双模式 Claude Code 集成**:
-  - `/ask` — 无状态模式，`claude -p` 一次性调用
-  - `/session` + `/s` — tmux 持久会话，保持上下文
-- **通用命令框架**: 可扩展的命令路由，新增命令只需实现接口
-- **Claude Code Hooks 回调**: 内置 HTTP 端点，支持双向通信
-- **安全控制**: 用户/群聊白名单、Shell 命令白名单
-- **定时状态推送**: 自动推送系统状态卡片到飞书群聊（默认每 3 小时）
+- **WebSocket 长连接** — 无需公网 IP，本地直接运行
+- **Claude Agent SDK 原生集成** — `query()` async generator，结构化事件流，支持 `canUseTool` / `resume` / `interrupt()`
+- **事件驱动实况卡片** — SDK 事件流驱动卡片 PATCH（默认 500ms 节流），替代轮询
+- **工具审批卡片** — 高危工具弹「✅ 允许 / ❌ 拒绝」卡片，in-process `canUseTool` 回调
+- **飞书反向 MCP** — Claude 可主动给飞书发消息（`mcp__feishu__send_message`），带 rate limit
+- **会话磁盘持久化** — 重启后自动 resume，cost 延续
+- **内置守护进程** — fork + PID 文件 + 信号处理，`chat-cc start/stop/restart/status`
+- **空闲自动回收** — 30 分钟无活动自动 disconnect，保留磁盘 meta，下次自动 resume
+- **安全控制** — 用户/群聊白名单（消息 + 卡片按钮双入口统一校验）
+
+## 前置条件
+
+- **Node.js >= 20.11**
+- **Claude Code CLI** — `claude` 命令可用（`npm install -g @anthropic-ai/claude-code`）
+- **ANTHROPIC_API_KEY** 已设置
+- 飞书企业自建应用（Bot 能力 + WebSocket 事件）
 
 ## 快速开始
 
-### 1. 飞书应用配置
+### 第一步：安装
+
+```bash
+npm install -g chat-cc
+```
+
+安装后提供两个等价命令：`chat-cc` 和 `chatcc`。
+
+### 第二步：配置飞书应用
 
 1. 登录 [飞书开放平台](https://open.feishu.cn) → 创建企业自建应用
 2. 添加「机器人」能力
-3. 权限: `im:message`、`im:message:send_as_bot`、`im:message:patch`
-4. 事件订阅 → **WebSocket 模式** → 订阅 `im.message.receive_v1`
+3. **权限管理** 开通以下权限：
+   - `im:message`
+   - `im:message:send_as_bot`
+   - `im:message:patch`
+   - `im:message.p2p_msg:readonly`
+   - `im:message.group_at_msg:readonly`
+   - `im:message.group_msg:readonly`
+4. **事件与回调** → 选择 **WebSocket 模式**
+   - 事件配置：添加 `im.message.receive_v1`
+   - 回调配置：添加 `card.action.trigger`
 5. 发布应用版本
 
-### 2. 配置
+### 第三步：初始化配置
 
 ```bash
-cp config.yaml config.local.yaml
-# 编辑 config.local.yaml，填入 app_id 和 app_secret
+chat-cc init
 ```
 
-或使用环境变量:
+交互向导会引导填写 `app_id`、`app_secret` 等必要字段，配置写入 `~/.chat-cc/config.yaml`。
+
+### 第四步：启动
 
 ```bash
-export FEISHU_APP_ID="cli_xxx"
-export FEISHU_APP_SECRET="xxx"
+chat-cc start          # 后台守护进程（默认）
+chat-cc start --foreground  # 前台运行（调试用）
 ```
 
-### 3. 运行
+### 第五步：在飞书中发消息
 
-```bash
-# 编译
-go build -o chatcc .
+与机器人私聊或在已加入的群 @ 机器人，发送 `/ping` 验证连通性。
 
-# 后台启动（日志写入 logs/ 目录，按天自动切换）
-./chatcc start --config config.local.yaml
+---
 
-# 查看状态
-./chatcc status
+## CLI 命令
 
-# 停止
-./chatcc stop
-
-# 重启
-./chatcc restart --config config.local.yaml
-
-# 前台运行（日志输出到终端，调试用）
-./chatcc console --config config.local.yaml
+```
+chat-cc init                    # 交互式配置向导
+chat-cc start [--foreground]    # 启动守护进程（默认后台）
+chat-cc stop                    # 停止守护进程
+chat-cc restart                 # 重启守护进程
+chat-cc status                  # 进程状态 + 连接状态
+chat-cc logs [--follow] [-n <行数>]  # 查看/实时追踪日志
+chat-cc config <get|set|edit|path>   # 管理配置
+chat-cc doctor                  # 环境健康检查
+chat-cc version                 # 版本信息
 ```
 
-### 日志
+### 配置目录
 
-- `start` 模式日志写入 `logs/chatcc.log`
-- 跨天自动归档为 `logs/chatcc-YYYY-MM-DD.log.gz`（gzip 压缩）
-- `console` 模式日志直接输出到终端
+| 路径 | 说明 | 环境变量覆盖 |
+|---|---|---|
+| `~/.chat-cc/` | 配置根目录 | `CHAT_CC_HOME` |
+| `~/.chat-cc/config.yaml` | 主配置文件 | `CHAT_CC_CONFIG` |
 
-## 命令列表
+---
 
-| 命令 | 说明 | 示例 |
-|------|------|------|
-| `/ask <提示词>` | Claude Code 无状态问答 | `/ask 帮我看看有什么文件` |
-| `/ask --cwd <目录> <提示词>` | 指定工作目录 | `/ask --cwd /path/to/project 分析结构` |
-| `/ask @别名 <提示词>` | 用项目别名 | `/ask @server 看看迁移方案` |
-| `/session start [目录]` | 启动 tmux 持久会话 | `/session start /path/to/project` |
-| `/session status` | 查看当前会话详情 | `/session status` |
-| `/session list` | 列出所有活跃会话 | `/session list` |
-| `/session kill <会话名>` | 终止指定会话 | `/session kill cc-chat-xxx` |
-| `/session stop` | 关闭当前会话 | `/session stop` |
-| `/s <消息>` | 发送到活跃会话 | `/s 帮我重构这个函数` |
-| `/key <按键>` | 向活跃会话发送特殊按键 | `/key enter`, `/key ctrl+c` |
-| `/shell <命令>` | 执行白名单 shell 命令 | `/shell docker ps` |
-| `/project` 或 `/p` | 查看已配置的项目别名 | `/project` |
-| `/status` | 查看系统状态和活跃会话 | `/status` |
-| `/danger on\|off` | 切换 Claude Code 权限绕过模式 | `/danger on` |
-| `/reload` | 热重载配置文件 | `/reload` |
-| `/help [命令]` | 帮助信息 | `/help ask` |
+## 飞书机器人命令
 
-**非命令消息**: 如有活跃 tmux 会话则发送到会话，否则等同 `/ask`。
+| 命令 | 说明 |
+|---|---|
+| `/ping` | 健康检查 |
+| `/status` | 系统状态 |
+| `/help` | 帮助 |
+| `/ask [@别名] <问题>` | 无状态单次提问，流式卡片输出 |
+| `/session start [@别名\|path]` | 启动长驻会话 |
+| `/session list` | 列出活跃及历史会话 |
+| `/s <消息>` | 向当前活跃会话发送（非命令文本也自动走这里） |
+| `/stop` | 精确中断当前活跃会话 |
+| `/usage` | Token/Cost 看板（按会话 + 全局聚合） |
+| `/project` | 项目别名管理 |
+| `/danger` | 切换 danger 模式（绕过工具审批） |
+| `/reload` | 热重载配置 |
+
+---
 
 ## 配置说明
 
-### 超时配置
-
-默认情况下，Claude Code 执行超时为 50 分钟（相比之前的 5 分钟大幅提升）。你可以在 `config.yaml` 中自定义超时时间：
+配置文件位于 `~/.chat-cc/config.yaml`，关键字段如下：
 
 ```yaml
-# Claude Code 超时配置（分钟）
-claude_ask_timeout: 50        # /ask 命令超时时间
-claude_session_timeout: 50    # /session 会话响应超时
+# 飞书应用凭据（也可用环境变量 FEISHU_APP_ID / FEISHU_APP_SECRET）
+app_id: ""
+app_secret: ""
+
+# 安全白名单（留空表示不限制）
+allowed_users: []
+allowed_chats: []
+
+# 工作目录与项目别名
+default_cwd: "."
+projects:                        # 别名 → 路径，/ask @myapp 即切换到对应目录
+  myapp: /path/to/project
+
+# Claude 工具控制
+claude_allowed_tools: ["Read", "Glob", "Grep"]
+claude_danger_mode: false        # true 时绕过 canUseTool 审批
+auto_approve_tools:              # canUseTool 层白名单（正则匹配工具名）
+  - "^(Read|Glob|Grep|LS|WebFetch|WebSearch|TodoWrite)$"
+approval_timeout_ms: 120000      # 审批卡片超时后默认 deny
+
+# 实况卡片
+stream_throttle_ms: 500          # 卡片 PATCH 节流间隔（毫秒）
+
+# 会话管理
+idle_timeout_minutes: 30         # 空闲超时自动 disconnect（保留磁盘 meta）
+idle_check_seconds: 60
+
+# 飞书反向 MCP
+mcp_feishu_rate_limit_ms: 10000  # 同一 chat 发消息最小间隔
+notify_chat_id: ""               # 默认通知群
+
+log_level: "info"
 ```
 
-### 消息分块与长输出处理
+---
 
-系统会自动将超过 3500 字符的长消息分块发送，避免消息截断导致信息丢失。分块时会智能选择段落、句子边界，确保内容完整性。每条分块消息会标注序号（如 [1/3], [2/3], [3/3]）。
-
-你可以自定义分块大小：
-
-```yaml
-# 消息分块配置
-max_chunk_size: 3500    # 长消息分块大小（默认 3500 字符）
-```
-
-### 定时状态推送
-
-系统可以定时将服务状态以卡片形式推送到飞书群聊，方便团队实时了解系统运行情况。默认每 3 小时推送一次，推送内容与 `/status` 命令一致（系统信息、活跃会话、tmux 状态等）。
-
-```yaml
-# 定时状态推送
-status_push_interval: 180        # 推送间隔（分钟），0 则禁用，默认 180（3 小时）
-status_push_chat_id: ""          # 推送目标群聊，为空则用 notify_chat_id
-```
-
-支持热重载：修改配置后执行 `/reload` 即可生效，无需重启。
-
-### 交互式输入处理
-
-当 Claude Code 在 `/session` 会话中遇到交互式提示（如确认操作、yes/no 问题等）时，系统会自动检测并提示你：
+## 架构
 
 ```
-⚠️ 检测到交互式提示，Claude Code 正在等待输入。
-💡 请使用 /s 命令发送您的响应。
+src/
+├─ main.ts                    # 入口：装配所有模块
+├─ paths.ts                   # 配置目录/文件路径解析（CHAT_CC_HOME / CHAT_CC_CONFIG）
+├─ config.ts                  # YAML + zod + env 覆盖
+├─ logger.ts                  # pino
+├─ cli/                       # CLI 子命令实现（init / start / stop / logs / config / doctor …）
+├─ feishu/
+│  ├─ client.ts               # Lark Client + WSClient + EventDispatcher
+│  ├─ router.ts               # 命令分发
+│  ├─ replier.ts              # 发消息 / 卡片 PATCH（含指数退避重试）
+│  ├─ card-action.ts          # 卡片按钮回调（WS card.action.trigger + 审批 resolver）
+│  └─ cards/                  # 卡片渲染器（live / approval / cost / base）
+├─ engine/
+│  ├─ session.ts              # 每 thread 一个 query() + 输入 queue + resume
+│  ├─ pool.ts                 # SessionPool + 活跃会话指针 + 空闲回收 + 磁盘预热
+│  ├─ streamer.ts             # 事件驱动卡片 PATCH（throttle）
+│  ├─ monitor.ts              # result → 完成通知
+│  ├─ hooks.ts                # canUseTool + ApprovalGate（审批卡片 ↔ resolver）
+│  ├─ cost.ts                 # token/cost 聚合
+│  ├─ persistence.ts          # 会话磁盘持久化
+│  └─ events.ts               # SDKMessage → EngineEvent 翻译
+├─ mcp/
+│  └─ feishu-server.ts        # Claude → 飞书反向 MCP（send_message / ping）
+└─ commands/                  # /ask /session /s /stop /usage /status /help /project /danger /reload
 ```
 
-你可以通过 `/s yes` 或 `/s n` 等命令回应交互提示。系统会检测以下常见交互模式：
-- `(y/n)`, `[yes/no]` - 确认问题
-- `continue?`, `proceed?` - 继续提示
-- `press enter`, `按回车` - 等待确认
-- 以及其他常见的交互式提示
+---
 
-### 嵌套会话问题
+## 开发
 
-本项目已修复嵌套 Claude Code 会话问题。系统会自动过滤可能导致嵌套会话检测的环境变量（如 `CLAUDECODE`、`CLAUDE_CODE_` 等），确保在 Claude Code 环境中也能正常启动子进程。
-
-### 会话健康检查与错误诊断
-
-`/session` 模式内置了完善的健康检查机制：
-
-- **启动前验证**: 自动检查工作目录是否存在，无效路径会立即报错而非静默失败
-- **启动后验证**: 创建 tmux 会话后自动验证 claude 进程是否成功启动；如果进程退出，会捕获错误输出用于诊断
-- **发送前检查**: 每次发送消息前检查 tmux 会话和 claude 进程是否仍然存活，死亡会话自动清理
-- **列表同步**: `/session list` 和 `/session status` 会与真实 tmux 状态同步，自动清理已死亡的会话
-- **remain-on-exit**: tmux 会话设置了 `remain-on-exit`，即使 claude 退出也能捕获最后的输出用于问题诊断
-
-常见问题排查：
-```
-# 如果 /session start 报错"工作目录不存在"
-# → 检查路径是否拼写正确
-/session start /Volumes/data/sources   ✅
-/session start /Volumns/data/sources   ❌ (typo)
-
-# 如果报错"claude 进程已退出"
-# → 检查 claude 命令是否可正常运行
-claude --version
-
-# 清理残留会话
-/session stop
+```bash
+npm run dev            # tsx watch（前台运行）
+npm run build          # 编译到 dist/
+npm run typecheck      # 只类型检查
+npm test               # vitest
 ```
 
-### 状态查询和项目管理
+### 为什么用 TypeScript 而非 Go
 
-**会话管理** (`/session`):
-- `/session start [目录]` - 启动新的 Claude Code 持久会话
-- `/session status` - 查看当前会话的详细信息（会话名、工作目录、创建时间、运行时间、状态）
-- `/session list` - 列出所有活跃的会话及其工作目录和运行时间
-- `/session kill <会话名>` - 终止指定名称的会话（通过 `/session list` 查看会话名）
-- `/session stop` - 关闭当前会话
-
-**查看系统状态** (`/status`):
-- 显示系统信息（OS、架构、运行时间）
-- 显示默认工作目录
-- 显示活跃的 Claude Code 会话及其工作目录和运行时间
-- **显示所有运行中的 Claude 进程**（包括 `/ask` 产生的 `claude -p` 进程、交互式会话、VSCode 集成），含 PID、运行模式和运行时长
-- 显示 tmux 会话列表
-- 显示 Claude Code 版本信息
-- 显示权限模式状态
-
-**查看项目列表** (`/project` 或 `/p`):
-- 显示所有配置的项目别名及其对应目录
-- 提供项目别名的使用示例
-
-在 `config.yaml` 中配置项目：
-```yaml
-projects:
-  server: "/Volumes/data/sources/server_migration"
-  devops: "/Volumes/data/sources/devops"
-  webapp: "/path/to/webapp"
-```
-
-使用项目别名：
-```
-/ask @server 分析最新的代码变更
-/session start @webapp
-```
-
-## Claude Code Hooks 集成
-
-### 从 Claude Code 通知飞书
-
-在 `~/.claude/settings.json` 中配置 hooks:
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "curl -sS http://localhost:9876/notify -H 'Content-Type: application/json' -d '{\"event\":\"file_changed\",\"message\":\"Claude 修改了文件\",\"chat_id\":\"oc_xxx\"}'"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-### Hook HTTP API
-
-```
-POST http://localhost:9876/notify
-Content-Type: application/json
-
-{
-  "event": "task_complete",
-  "message": "任务已完成: 重构了认证模块",
-  "chat_id": "oc_xxx"       // 可选，指定推送到哪个飞书聊天
-}
-```
-
-```
-GET http://localhost:9876/health
-→ 200 ok
-```
-
-## 项目别名
-
-在 `config.yaml` 中配置项目目录别名:
-
-```yaml
-projects:
-  server: "/Volumes/data/sources/server_migration"
-  devops: "/Volumes/data/sources/devops"
-  webapp: "/Volumes/data/sources/webapp"
-```
-
-使用: `/ask @server 看看迁移方案的进度`
-
-## 扩展命令
-
-实现 `commands.Command` 接口并注册到 router:
-
-```go
-type Command interface {
-    Name() string
-    Aliases() []string
-    Description() string
-    Usage() string
-    Execute(ctx context.Context, args string, meta *MessageMeta) (string, error)
-}
-```
-
-在 `main.go` 中注册:
-
-```go
-router.Register(NewMyCommand())
-```
-
-## ChatCC vs OpenClaw
-
-[OpenClaw](https://github.com/openclaw/openclaw) 是跨平台（20+）的通用 AI 助手，ChatCC 则专注飞书 + Claude Code 远程控制。两者定位不同，可以互补使用。
-
-| 维度 | OpenClaw | ChatCC |
-|------|----------|------------|
-| **定位** | 通用个人 AI 助手，支持多平台 | 专注飞书的 Claude Code 远程控制网关 |
-| **核心功能** | 多模型 AI 对话（ChatGPT/Claude/Gemini） | Claude Code 专用执行环境（本地开发工具） |
-| **消息平台** | 20+ 平台（WhatsApp/Telegram/Slack 等） | 仅飞书（深度集成） |
-| **技术栈** | Node.js | Go（单二进制部署） |
-| **本地执行** | 主要调用 AI API | 直接在本地执行 Claude Code（tmux 持久会话） |
-| **配置复杂度** | 多平台 + 多模型认证 | 仅需飞书 app_id/app_secret |
-
-**选 ChatCC**：需要通过飞书远程控制本地 Claude Code、企业内网环境、轻量部署。
-
-**选 OpenClaw**：需要跨平台统一 AI 助手、多模型切换、语音/多模态交互。
-
-> 详细对比请参考 [docs/comparison-openclaw.md](docs/comparison-openclaw.md)。
-
-## 安全注意
-
-- `/shell` 仅执行白名单内的命令
-- 建议配置 `allowed_users` 限制响应范围
-- `claude_danger_mode: true` 会跳过所有 Claude Code 权限检查，仅在可控环境使用
-- 不要将 `config.yaml` 中的 `app_secret` 提交到版本控制
+v2 用 Go 通过 tmux 子进程 + `capture-pane` 轮询抓取输出，存在三个系统性瓶颈：Claude Agent SDK 无 Go 版本（`canUseTool`/`resume`/MCP 均为 SDK 独占能力）、ANSI 屏幕抓取脆弱、轮询延迟不可消除。v3 直接使用 `@anthropic-ai/claude-agent-sdk` 的 `query()` async generator，获得结构化 JSON 事件流和全部一等公民能力。
