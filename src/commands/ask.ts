@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs';
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 import { log } from '../logger.js';
+import { previewJson } from '../utils.js';
 import { resolveCwd } from '../config.js';
+import { buildCanUseTool } from '../engine/hooks.js';
 import { translateSdkMessage } from '../engine/events.js';
 import { renderLiveCard, type LiveCardState } from '../feishu/cards/live.js';
 import type { CommandFn } from './types.js';
@@ -22,7 +24,7 @@ export function interruptAsk(key: string): boolean {
  * 无状态单次提问 — 每次起一个独立 query，不保留上下文。
  * 用流式卡片即时反馈（立刻发占位卡片，SDK 事件到来时节流 patch）。
  */
-export const askCommand: CommandFn = async (args, meta, { cfg, replier }) => {
+export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate }) => {
   const trimmed = args.trim();
   if (!trimmed) return '用法: /ask [@项目别名] <问题>';
 
@@ -48,6 +50,7 @@ export const askCommand: CommandFn = async (args, meta, { cfg, replier }) => {
     toolResults: 0,
     phase: 'streaming',
     stateless: true,
+    cwd,
   };
 
   const placeholderMid = await replier.replyCard(meta.messageId, renderLiveCard(state));
@@ -86,7 +89,15 @@ export const askCommand: CommandFn = async (args, meta, { cfg, replier }) => {
     allowedTools: cfg.claude_allowed_tools,
     ...(cfg.claude_danger_mode
       ? { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }
-      : {}),
+      : {
+          canUseTool: buildCanUseTool({
+            threadKey: state.threadKey,
+            chatId: meta.chatId,
+            gate,
+            autoApprovePatterns: cfg.auto_approve_tools.map((s) => new RegExp(s)),
+            timeoutMs: cfg.approval_timeout_ms,
+          }),
+        }),
   };
 
   const askKey = state.threadKey;
@@ -146,9 +157,3 @@ export const askCommand: CommandFn = async (args, meta, { cfg, replier }) => {
     activeAskQueries.delete(askKey);
   }
 };
-
-function previewJson(v: unknown): string {
-  const s = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
-  if (s.length <= 400) return s;
-  return s.slice(0, 400) + '…';
-}

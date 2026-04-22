@@ -1,4 +1,4 @@
-import { loadConfig, resolveConfigPath, getConfigMeta } from './config.js';
+import { loadConfig, resolveConfigPath } from './config.js';
 import { initLogger, log } from './logger.js';
 import { logPath } from './paths.js';
 import { buildClient, buildWsClient, startDispatcher } from './feishu/client.js';
@@ -7,7 +7,6 @@ import { Router } from './feishu/router.js';
 import { SessionPool, parseThreadKey } from './engine/pool.js';
 import type { EngineEvent } from './engine/events.js';
 import { LiveStreamer } from './engine/streamer.js';
-import { Monitor } from './engine/monitor.js';
 import { CostAggregator } from './engine/cost.js';
 import { Persistence, type PersistedSession } from './engine/persistence.js';
 import { createApprovalGate, buildCanUseTool } from './engine/hooks.js';
@@ -25,10 +24,11 @@ import { stopCommand } from './commands/stop.js';
 import { makeUsageCommand } from './commands/usage.js';
 import { projectCommand } from './commands/project.js';
 import { dangerCommand, reloadCommand } from './commands/danger.js';
+import { isAllowed } from './auth.js';
 
 export async function main(opts?: { foreground?: boolean }): Promise<void> {
   const cfgPath = resolveConfigPath();
-  const cfg = loadConfig(cfgPath);
+  const { config: cfg, meta: configMeta } = loadConfig(cfgPath);
 
   const foreground = opts?.foreground ?? process.stdout.isTTY;
   const logger = initLogger({
@@ -36,9 +36,8 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
     filePath: foreground ? undefined : logPath(),
   });
 
-  const meta = getConfigMeta(cfg);
-  if (meta.usedLegacy) {
-    logger.warn({ path: meta.path }, '正在使用旧路径配置文件，建议迁移到 ~/.chat-cc/config.yaml（运行 chat-cc init）');
+  if (configMeta.usedLegacy) {
+    logger.warn({ path: configMeta.path }, '正在使用旧路径配置文件，建议迁移到 ~/.chat-cc/config.yaml（运行 chat-cc init）');
   }
 
   if (!cfg.app_id || !cfg.app_secret) {
@@ -74,9 +73,6 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
       if (usage) cost.add(threadKey, usage);
     },
   });
-
-  const monitor = new Monitor(replier);
-  const getNotifyChatId = () => cfg.status_push_chat_id || cfg.notify_chat_id;
 
   const pool = new SessionPool({
     idleTimeoutMs: cfg.idle_timeout_minutes * 60_000,
@@ -126,9 +122,8 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
       if (ev.kind === 'init') {
         persistSession(threadKey);
       }
-      await streamer.onEvent(chatId, threadKey, ev);
+      await streamer.onEvent(chatId, threadKey, ev, pool.getMeta(threadKey)?.cwd);
       if (ev.kind === 'result') {
-        await monitor.onResult(threadKey, ev.usage, ev.durationMs, getNotifyChatId());
         persistSession(threadKey, pool.isActiveForAnyUser(threadKey));
       }
     },
@@ -140,7 +135,7 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
     if (s.cost) cost.add(s.threadKey, s.cost);
   }
 
-  const deps = { cfg, pool, replier, streamer };
+  const deps = { cfg, pool, replier, streamer, gate };
   const router = new Router(replier, deps);
   router.register('ping', async () => `pong · chatcc v3 · ${new Date().toISOString()}`);
   router.register('help', helpCommand, ['h']);
@@ -163,19 +158,12 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
     }),
   );
 
-  const isAllowed = (senderId: string, chatId: string): boolean => {
-    if (cfg.allowed_users.length === 0 && cfg.allowed_chats.length === 0) return true;
-    if (cfg.allowed_users.includes(senderId)) return true;
-    if (cfg.allowed_chats.includes(chatId)) return true;
-    return false;
-  };
-
   const cardHandler = buildCardActionHandler({
     router,
     deps,
     approvalResolver: (requestId: string, decision: 'allow' | 'deny') =>
       gate.resolve(requestId, decision),
-    isAllowed,
+    isAllowed: (senderId: string, chatId: string) => isAllowed(cfg, senderId, chatId),
     renderRefreshCard: (refresh, chatId, senderId) => {
       const userKey = senderId || chatId;
       switch (refresh) {

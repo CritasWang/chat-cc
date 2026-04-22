@@ -1,5 +1,6 @@
 import type { Config } from '../config.js';
 import type { SessionPool } from '../engine/pool.js';
+import type { ApprovalGate } from '../engine/hooks.js';
 import type { LiveStreamer } from '../engine/streamer.js';
 import type { Replier } from '../feishu/replier.js';
 import type { MessageMeta } from '../feishu/router.js';
@@ -9,6 +10,7 @@ export interface CommandDeps {
   pool: SessionPool;
   replier: Replier;
   streamer: LiveStreamer;
+  gate: ApprovalGate;
 }
 
 export type CommandFn = (args: string, meta: MessageMeta, deps: CommandDeps) => Promise<string | void>;

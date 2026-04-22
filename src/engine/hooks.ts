@@ -1,13 +1,15 @@
-import type { HookCallbackMatcher, CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import type { CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import { previewJson } from '../utils.js';
 import { log } from '../logger.js';
 import { renderApprovalCard, renderApprovalResolved, type ApprovalCardSpec } from '../feishu/cards/approval.js';
 import type { Replier } from '../feishu/replier.js';
 
-/** Pending 审批表：requestId → { resolve, spec, messageId } */
+/** Pending 审批表：requestId → { resolve, spec, messageId, timer } */
 interface PendingApproval {
   resolve: (decision: 'allow' | 'deny') => void;
   spec: ApprovalCardSpec;
   messageId?: string;
+  timer?: NodeJS.Timeout;
 }
 
 export interface ApprovalGate {
@@ -26,19 +28,18 @@ export function createApprovalGate(replier: Replier): ApprovalGate {
     async request(spec, chatId, timeoutMs) {
       const mid = await replier.sendCard(chatId, renderApprovalCard(spec));
       return new Promise<'allow' | 'deny'>((resolve) => {
+        const timer = timeoutMs > 0 ? setTimeout(() => {
+          const r = pending.get(spec.requestId);
+          if (!r) return;
+          pending.delete(spec.requestId);
+          log().warn({ requestId: spec.requestId, tool: spec.toolName }, '审批超时，默认 deny');
+          r.resolve('deny');
+        }, timeoutMs) : undefined;
+
         const rec: PendingApproval = { resolve, spec };
         if (mid) rec.messageId = mid;
+        if (timer) rec.timer = timer;
         pending.set(spec.requestId, rec);
-
-        if (timeoutMs > 0) {
-          setTimeout(() => {
-            const r = pending.get(spec.requestId);
-            if (!r) return;
-            pending.delete(spec.requestId);
-            log().warn({ requestId: spec.requestId, tool: spec.toolName }, '审批超时，默认 deny');
-            r.resolve('deny');
-          }, timeoutMs);
-        }
       });
     },
 
@@ -46,6 +47,7 @@ export function createApprovalGate(replier: Replier): ApprovalGate {
       const rec = pending.get(requestId);
       if (!rec) return false;
       pending.delete(requestId);
+      if (rec.timer) clearTimeout(rec.timer);
       rec.resolve(decision);
       if (rec.messageId) {
         void replier.patchCard(rec.messageId, renderApprovalResolved(rec.spec, decision));
@@ -54,7 +56,10 @@ export function createApprovalGate(replier: Replier): ApprovalGate {
     },
 
     clear() {
-      for (const rec of pending.values()) rec.resolve('deny');
+      for (const rec of pending.values()) {
+        if (rec.timer) clearTimeout(rec.timer);
+        rec.resolve('deny');
+      }
       pending.clear();
     },
   };
@@ -77,7 +82,7 @@ export function buildCanUseTool(opts: HookBuildOptions): CanUseTool {
       return { behavior: 'allow', updatedInput: input };
     }
     const requestId = `${opts.threadKey}:${toolName}:${Date.now()}`;
-    const preview = previewJson(input);
+    const preview = previewJson(input, 1500);
 
     const abortPromise = new Promise<'abort'>((resolve) => {
       if (signal.aborted) return resolve('abort');
@@ -99,14 +104,4 @@ export function buildCanUseTool(opts: HookBuildOptions): CanUseTool {
     if (winner === 'allow') return { behavior: 'allow', updatedInput: input };
     return { behavior: 'deny', message: '用户在飞书端拒绝' };
   };
-}
-
-/** 额外 hook：PreToolUse / Stop，占位给 M5 cost 日志用 */
-export function buildHookMatchers(): Record<string, HookCallbackMatcher[]> {
-  return {};
-}
-
-function previewJson(v: unknown): string {
-  const s = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
-  return s.length > 1500 ? s.slice(0, 1500) + '…' : s;
 }

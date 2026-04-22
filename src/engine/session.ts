@@ -101,10 +101,15 @@ export class Session {
     if (this.q) await this.q.interrupt();
   }
 
-  async close(): Promise<void> {
+  async close(timeoutMs = 5000): Promise<void> {
     this.queue.close();
     if (this.q) this.q.close();
-    if (this.pumpPromise) await this.pumpPromise;
+    if (this.pumpPromise) {
+      await Promise.race([
+        this.pumpPromise,
+        new Promise<void>((r) => setTimeout(r, timeoutMs)),
+      ]);
+    }
   }
 
   private async pump(): Promise<void> {

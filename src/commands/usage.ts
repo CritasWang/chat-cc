@@ -6,7 +6,7 @@ export function makeUsageCommand(deps: {
 }): CommandFn {
   return async (_args, meta, { replier }) => {
     const report = await deps.getReport();
-    await replier.sendCard(meta.chatId, renderCostCard(report));
+    await replier.replyCard(meta.messageId, renderCostCard(report));
     return;
   };
 }

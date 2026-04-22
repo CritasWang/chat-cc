@@ -43,6 +43,11 @@ const ConfigSchema = z.object({
 
 export type Config = z.infer<typeof ConfigSchema>;
 
+export interface ConfigLoadResult {
+  config: Config;
+  meta: { path: string; usedLegacy: boolean };
+}
+
 const LEGACY_PATHS = ['./config.local.yaml', './config.yaml'];
 
 export function resolveConfigPath(): string {
@@ -59,7 +64,7 @@ export function resolveConfigPath(): string {
   return home;
 }
 
-export function loadConfig(path?: string): Config {
+export function loadConfig(path?: string): ConfigLoadResult {
   const cfgPath = path ?? resolveConfigPath();
   let raw: unknown = {};
   let usedLegacy = false;
@@ -85,12 +90,7 @@ export function loadConfig(path?: string): Config {
     app_secret: envSecret?.length ? envSecret : cfg.app_secret,
   };
 
-  return { ...result, _cfgPath: cfgPath, _usedLegacy: usedLegacy } as Config;
-}
-
-export function getConfigMeta(cfg: Config): { path: string; usedLegacy: boolean } {
-  const meta = cfg as Config & { _cfgPath?: string; _usedLegacy?: boolean };
-  return { path: meta._cfgPath ?? 'unknown', usedLegacy: meta._usedLegacy ?? false };
+  return { config: result, meta: { path: cfgPath, usedLegacy: usedLegacy } };
 }
 
 export function resolveCwd(cfg: Config, input: string): string {

@@ -3,6 +3,7 @@ import https from 'node:https';
 import http from 'node:http';
 import type { Config } from '../config.js';
 import { log } from '../logger.js';
+import { isAllowed } from '../auth.js';
 import type { Router, MessageMeta } from './router.js';
 
 // 全局 Keep-Alive agent —— 通过修改 Node 全局 agent 的方式生效，避开覆盖 SDK httpInstance 导致丢失 token 拦截器的问题
@@ -56,6 +57,14 @@ export function startDispatcher(
   const handlers: Record<string, (raw: unknown) => Promise<unknown>> = {
     'im.message.receive_v1': async (raw: unknown) => {
       const data = raw as ReceiveMessageEvent;
+      const msg = data.message;
+
+      // 非文本消息提示
+      if (msg?.message_id && msg.message_type && msg.message_type !== 'text') {
+        log().debug({ messageType: msg.message_type, chat: msg.chat_id }, '收到非文本消息，暂不支持');
+        return;
+      }
+
       const meta = extractMeta(data);
       if (!meta) return;
 
@@ -113,13 +122,6 @@ function extractText(data: ReceiveMessageEvent, meta: MessageMeta): string {
     text = text.trim();
   }
   return text;
-}
-
-function isAllowed(cfg: Config, senderId: string, chatId: string): boolean {
-  if (cfg.allowed_users.length === 0 && cfg.allowed_chats.length === 0) return true;
-  if (cfg.allowed_users.includes(senderId)) return true;
-  if (cfg.allowed_chats.includes(chatId)) return true;
-  return false;
 }
 
 function mapLogLevel(level: Config['log_level']): Lark.LoggerLevel {

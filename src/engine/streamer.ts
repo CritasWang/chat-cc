@@ -1,4 +1,5 @@
 import { log } from '../logger.js';
+import { previewJson } from '../utils.js';
 import { renderLiveCard, type LiveCardState } from '../feishu/cards/live.js';
 import { renderAskUserCard, parseAskUserInput } from '../feishu/cards/ask-user.js';
 import type { Replier } from '../feishu/replier.js';
@@ -26,8 +27,8 @@ export class LiveStreamer {
 
   constructor(private readonly deps: StreamerDeps) {}
 
-  async onEvent(chatId: string, threadKey: string, ev: EngineEvent): Promise<void> {
-    const turn = this.ensureTurn(chatId, threadKey, ev);
+  async onEvent(chatId: string, threadKey: string, ev: EngineEvent, cwd?: string): Promise<void> {
+    const turn = this.ensureTurn(chatId, threadKey, ev, cwd);
     if (!turn) return;
 
     switch (ev.kind) {
@@ -79,7 +80,7 @@ export class LiveStreamer {
     this.turns.delete(threadKey);
   }
 
-  private ensureTurn(chatId: string, threadKey: string, ev: EngineEvent): Turn | undefined {
+  private ensureTurn(chatId: string, threadKey: string, ev: EngineEvent, cwd?: string): Turn | undefined {
     let turn = this.turns.get(threadKey);
     if (turn) return turn;
 
@@ -100,6 +101,7 @@ export class LiveStreamer {
         assistantBuf: '',
         toolResults: 0,
         phase: 'streaming',
+        ...(cwd ? { cwd } : {}),
       },
       pendingPatch: false,
       lastPatchAt: 0,
@@ -139,10 +141,4 @@ export class LiveStreamer {
     });
     await turn.chain;
   }
-}
-
-function previewJson(v: unknown): string {
-  const s = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
-  if (s.length <= 400) return s;
-  return s.slice(0, 400) + '…';
 }

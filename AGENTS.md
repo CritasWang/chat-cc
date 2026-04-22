@@ -28,16 +28,17 @@ src/
 │  └─ version.ts                 版本信息
 ├─ paths.ts                      ~/.chat-cc/ 路径解析（CHAT_CC_HOME / CHAT_CC_CONFIG 覆盖）
 ├─ main.ts                       服务入口（读 config → 构造 Replier/Pool/Streamer/Router → 启动 WSClient）
-├─ config.ts                     YAML + zod 校验 + env 覆盖 + 路径优先级 + @别名解析
+├─ config.ts                     YAML + zod 校验 + env 覆盖 + 路径优先级 + @别名解析；loadConfig 返回 { config, meta }
+├─ utils.ts                      公共工具函数（previewJson 等）
+├─ auth.ts                       鉴权函数（isAllowed 白名单校验）
 ├─ logger.ts                     pino（后台写文件 / 前台 pino-pretty 双模式）
 ├─ engine/
 │  ├─ session.ts                 每 thread 一个 query()；内部 MessageQueue 做 streaming input
-│  ├─ pool.ts                    threadKey 映射 + 活跃会话指针 + 空闲回收 + 磁盘预热
+│  ├─ pool.ts                    threadKey 映射 + 活跃会话指针 + 空闲回收 + 磁盘预热 + restartAll
 │  ├─ streamer.ts                LiveStreamer：每 thread 一张「当前直播卡」，throttle PATCH
-│  ├─ monitor.ts                 result 事件 → 通知群
-│  ├─ hooks.ts                   canUseTool + ApprovalGate（pending 审批 Map）
+│  ├─ hooks.ts                   canUseTool + ApprovalGate（pending 审批 Map + timer 自动清理）
 │  ├─ cost.ts                    CostAggregator（per-thread + total + 估算 USD）
-│  ├─ persistence.ts             ~/.chat-cc/sessions/<safe>.json 读写
+│  ├─ persistence.ts             ~/.chat-cc/sessions/<hex>.json 读写（hex 编码防碰撞 + schema 校验）
 │  └─ events.ts                  SDKMessage → EngineEvent（init/assistant-text/tool-use/tool-result/result/error）
 ├─ feishu/
 │  ├─ client.ts                  Lark.Client、WSClient、EventDispatcher（im.message.receive_v1 + card.action.trigger）

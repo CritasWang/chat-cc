@@ -179,7 +179,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
     const target = rest
       ? resolveTarget(pool, meta, rest)
       : (() => {
-          const act = pool.getActive(userKey);
+          const act = pool.getOrResumeActive(userKey);
           return act
             ? { threadKey: act.threadKey, slot: parseThreadKey(act.threadKey).slot }
             : undefined;
@@ -195,7 +195,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
   }
 
   if (sub === 'current') {
-    const sess = pool.getActive(userKey);
+    const sess = pool.getOrResumeActive(userKey);
     if (!sess) {
       await replier.replyCard(
         meta.messageId,

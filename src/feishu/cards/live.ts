@@ -11,9 +11,10 @@ export interface LiveCardState {
   error?: string;
   usage?: UsageSnapshot;
   durationMs?: number;
-  interrupted?: boolean;
   /** stateless=true 时不显示会话相关按钮（用于 /ask 等无状态场景） */
   stateless?: boolean;
+  /** 当前工作目录，用于在卡片中展示项目名称 */
+  cwd?: string;
 }
 
 export function renderLiveCard(state: LiveCardState): InteractiveCard {
@@ -75,16 +76,22 @@ export function renderLiveCard(state: LiveCardState): InteractiveCard {
 }
 
 function titleFor(state: LiveCardState): string {
+  const project = state.cwd ? projectName(state.cwd) : '';
+  const suffix = project ? ` · ${project}` : '';
   switch (state.phase) {
     case 'done':
-      return '✅ 完成';
+      return `✅ 完成${suffix}`;
     case 'error':
-      return '⚠️ 出错';
+      return `⚠️ 出错${suffix}`;
     case 'interrupted':
-      return '🛑 已中断';
+      return `🛑 已中断${suffix}`;
     default:
-      return '💬 Claude 思考中…';
+      return `💬 Claude 思考中…${suffix}`;
   }
+}
+
+function projectName(cwd: string): string {
+  return cwd.split('/').filter(Boolean).pop() ?? '';
 }
 
 function colorFor(state: LiveCardState): 'blue' | 'green' | 'red' | 'orange' {

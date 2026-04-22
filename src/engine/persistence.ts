@@ -33,7 +33,13 @@ export class Persistence {
       if (!name.endsWith('.json')) continue;
       try {
         const raw = readFileSync(join(this.dir, name), 'utf8');
-        out.push(JSON.parse(raw) as PersistedSession);
+        const data = JSON.parse(raw) as Record<string, unknown>;
+        // 基本 schema 校验：必须有 threadKey 和 cwd
+        if (typeof data['threadKey'] !== 'string' || typeof data['cwd'] !== 'string') {
+          log().warn({ name }, '持久化文件缺少必要字段，跳过');
+          continue;
+        }
+        out.push(data as unknown as PersistedSession);
       } catch (err) {
         log().warn({ err, name }, '读取持久化文件失败，跳过');
       }
@@ -51,7 +57,7 @@ export class Persistence {
   }
 
   private pathOf(threadKey: string): string {
-    const safe = threadKey.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safe = Buffer.from(threadKey).toString('hex');
     return join(this.dir, safe + '.json');
   }
 }

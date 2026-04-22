@@ -1,6 +1,6 @@
 {
   "name": "chat-cc",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "飞书 ↔ Claude Code 网关 — Lark Bot 一键接入 Claude Code",
   "type": "module",
   "engines": {

@@ -1,5 +1,39 @@
 # Changelog
 
+## v3.0.1 (2026-04-22)
+
+代码质量提升 + 功能增强 — 14 项修复与改进。
+
+### Fixed
+
+- **`/reload` 环境变量名拼写** — `CHATCC_CONFIG` 修正为 `CHAT_CC_CONFIG`，并统一使用 `resolveConfigPath()`
+- **审批 Gate setTimeout 内存泄漏** — 用户点击后 `clearTimeout`，避免闭包堆积
+- **`Session.close()` 无超时兜底** — 加 5s `Promise.race` 防止 SDK pump 卡死导致进程退出挂起
+- **`/usage` 命令用 `sendCard`** — 修正为 `replyCard`，与其他命令体验一致
+
+### Changed
+
+- **LiveCard 展示项目名称** — 卡片标题追加 cwd 目录名（如 `💬 Claude 思考中… · chatcc-v3`）
+- **`/ask` 补齐工具审批** — 非 danger 模式下 `/ask` 也走 `canUseTool` 审批拦截
+- **`restartAll()` 真正重启** — `/danger on|off` 后所有会话立即 stop → start，新配置即时生效
+- **`getOrResumeActive()` 懒恢复** — 服务重启后用户直接发消息即可恢复会话，无需手动 `/session start`
+- **`loadConfig` 返回结构化元数据** — `{ config, meta }` 替代隐藏的 `_cfgPath` 字段，类型安全
+- **`config set` 支持数组与浮点** — JSON 数组解析 + 浮点数 + 未知 key 警告
+- **持久化文件名防碰撞** — hex 编码替代正则替换 + `loadAll` 增加 schema 校验
+- **非文本消息记录日志** — 用户发图片/文件时不再静默忽略
+
+### Removed
+
+- **Monitor 纯文本通知** — result 摘要已在 LiveCard 终态展示，移除冗余的 `sendText` 推送
+- **`buildHookMatchers` 死代码** — 未使用的占位函数
+- **`LiveCardState.interrupted` 残留字段** — 中断状态已通过 `phase: 'interrupted'` 表达
+
+### Code Quality
+
+- `previewJson` 提取到 `src/utils.ts`，消除 3 处重复
+- `isAllowed` 提取到 `src/auth.ts`，消除 2 处重复
+- `getConfigMeta` 移除，config 元信息随 `loadConfig` 直接返回
+
 ## v3.0.0 (2026-04-22)
 
 从 alpha 到正式版：CLI 产品化，一行安装即可使用。

@@ -146,6 +146,25 @@ export class SessionPool {
     return k ? this.sessions.get(k) : undefined;
   }
 
+  /**
+   * 获取用户的活跃会话；若只有 meta（重启后预热态）则自动懒启动恢复。
+   * 用于 send / 隐式消息投递，保证重启后用户直接发消息即可恢复对话。
+   */
+  getOrResumeActive(userKey: string): Session | undefined {
+    const k = this.activeByUser.get(userKey);
+    if (!k) return undefined;
+    const existing = this.sessions.get(k);
+    if (existing) return existing;
+    // 仅有 meta（预热态），懒启动
+    const m = this.meta.get(k);
+    if (!m) {
+      this.activeByUser.delete(userKey);
+      return undefined;
+    }
+    log().info({ threadKey: k, userKey }, '懒启动：从预热 meta 恢复会话');
+    return this.start(parseThreadKey(k), m.cwd);
+  }
+
   setActive(userKey: string, threadKey: string): void {
     this.activeByUser.set(userKey, threadKey);
   }
@@ -220,6 +239,25 @@ export class SessionPool {
       await s.close().catch((err) => log().warn({ err, threadKey: key }, 'session close 异常（已忽略）'));
     }
     return true;
+  }
+
+  /**
+   * 重启所有正在运行的会话。
+   * 先 stop（keepMeta: true），再 start，令新配置（如 danger mode 切换）立即生效。
+   */
+  async restartAll(): Promise<void> {
+    const entries = [...this.sessions.keys()].map((k) => {
+      const m = this.meta.get(k);
+      return { threadKey: k, parsed: parseThreadKey(k), cwd: m?.cwd ?? '.' };
+    });
+    if (entries.length === 0) return;
+    log().info({ count: entries.length }, '重启所有活跃会话');
+    // 先全部 stop
+    await Promise.allSettled(entries.map(({ threadKey }) => this.stop(threadKey, { keepMeta: true })));
+    // 再全部 start（使用最新 buildConfig）
+    for (const { parsed, cwd } of entries) {
+      this.start(parsed, cwd);
+    }
   }
 
   async closeAll(): Promise<void> {
