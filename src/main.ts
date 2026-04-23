@@ -69,8 +69,19 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
   const streamer = new LiveStreamer({
     replier,
     throttleMs: cfg.stream_throttle_ms,
-    onResult: async (threadKey, usage) => {
+    onResult: async (threadKey, usage, durationMs) => {
       if (usage) cost.add(threadKey, usage);
+      // 完成通知：推送到 notify_chat_id（用项目名替代 threadKey）
+      if (cfg.notify_chat_id && usage) {
+        const cwd = pool.getMeta(threadKey)?.cwd;
+        const project = cwd ? cwd.split('/').filter(Boolean).pop() ?? '' : '';
+        const label = project || threadKey;
+        const dur = durationMs ? ` · ${(durationMs / 1000).toFixed(1)}s` : '';
+        await replier.sendText(
+          cfg.notify_chat_id,
+          `✓ ${label} · in ${usage.inputTokens} · out ${usage.outputTokens}${dur}`,
+        );
+      }
     },
   });
 

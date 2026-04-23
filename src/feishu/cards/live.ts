@@ -39,10 +39,11 @@ export function renderLiveCard(state: LiveCardState): InteractiveCard {
   }
 
   if (state.phase !== 'streaming' && state.usage) {
+    const project = state.cwd ? projectName(state.cwd) : '';
     elems.push(hr());
     elems.push(
       md(
-        `tokens · in ${state.usage.inputTokens} · out ${state.usage.outputTokens} · cache-r ${state.usage.cacheReadTokens} · cache-c ${state.usage.cacheCreationTokens}${state.durationMs ? ` · ${(state.durationMs / 1000).toFixed(1)}s` : ''}`,
+        `${project ? `**${project}** · ` : ''}tokens · in ${state.usage.inputTokens} · out ${state.usage.outputTokens} · cache-r ${state.usage.cacheReadTokens} · cache-c ${state.usage.cacheCreationTokens}${state.durationMs ? ` · ${(state.durationMs / 1000).toFixed(1)}s` : ''}`,
       ),
     );
   }
