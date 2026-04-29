@@ -12,19 +12,30 @@ export interface LoggerOptions {
 export function initLogger(opts: LoggerOptions | LoggerOptions['level']): Logger {
   const { level, filePath } = typeof opts === 'string' ? { level: opts, filePath: undefined } : opts;
 
+  const timestamp = (): string => {
+    const d = new Date();
+    const ts = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+    return `,"time":"${ts}"`;
+  };
+
   if (filePath) {
     mkdirSync(dirname(filePath), { recursive: true });
     const dest = createWriteStream(filePath, { flags: 'a' });
-    root = pino({ level }, dest);
+    root = pino({ level, timestamp }, dest);
   } else {
     root = pino({
       level,
+      timestamp,
       transport: process.stdout.isTTY
         ? { target: 'pino-pretty', options: { translateTime: 'SYS:HH:MM:ss', singleLine: true } }
         : undefined,
     });
   }
   return root;
+}
+
+function p(n: number): string {
+  return String(n).padStart(2, '0');
 }
 
 export function log(): Logger {

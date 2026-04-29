@@ -5,8 +5,18 @@ export type EngineEvent =
   | { kind: 'assistant-text'; text: string }
   | { kind: 'tool-use'; id: string; name: string; input: unknown }
   | { kind: 'tool-result'; toolUseId: string; content: string; isError: boolean }
-  | { kind: 'result'; ok: boolean; text: string; usage?: UsageSnapshot; durationMs: number }
+  | { kind: 'result'; ok: boolean; text: string; usage?: UsageSnapshot; durationMs: number; detail?: ResultDetail }
   | { kind: 'error'; message: string };
+
+export interface ResultDetail {
+  subtype?: string;
+  terminalReason?: string;
+  stopReason?: string | null;
+  numTurns?: number;
+  durationApiMs?: number;
+  totalCostUsd?: number;
+  errors?: string[];
+}
 
 export interface UsageSnapshot {
   inputTokens: number;
@@ -71,6 +81,11 @@ export function translateSdkMessage(msg: SDKMessage): EngineEvent[] {
       result?: string;
       errors?: string[];
       duration_ms?: number;
+      duration_api_ms?: number;
+      num_turns?: number;
+      stop_reason?: string | null;
+      terminal_reason?: string;
+      total_cost_usd?: number;
       usage?: {
         input_tokens?: number;
         output_tokens?: number;
@@ -96,6 +111,15 @@ export function translateSdkMessage(msg: SDKMessage): EngineEvent[] {
             cacheCreationTokens: m.usage.cache_creation_input_tokens ?? 0,
           }
         : undefined,
+      detail: {
+        subtype: m.subtype,
+        terminalReason: m.terminal_reason,
+        stopReason: m.stop_reason,
+        numTurns: m.num_turns,
+        durationApiMs: m.duration_api_ms,
+        totalCostUsd: m.total_cost_usd,
+        errors: m.errors,
+      },
     });
   }
 

@@ -102,6 +102,8 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
 
       const extra: Record<string, unknown> = {
         mcpServers: { feishu: currentMcpServer },
+        thinking: { type: 'adaptive' },
+        settings: { autoCompactEnabled: true },
       };
       if (cfg.claude_danger_mode) {
         extra['allowDangerouslySkipPermissions'] = true;
@@ -132,6 +134,16 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
       const { chatId } = parseThreadKey(threadKey);
       if (ev.kind === 'init') {
         persistSession(threadKey);
+      }
+      if (ev.kind === 'result') {
+        const lvl = ev.ok ? 'info' : 'error';
+        log()[lvl](
+          { threadKey, ok: ev.ok, usage: ev.usage, durationMs: ev.durationMs, ...ev.detail },
+          ev.ok ? 'SDK turn 完成' : `SDK turn 失败: ${ev.detail?.terminalReason ?? ev.text?.slice(0, 120)}`,
+        );
+      }
+      if (ev.kind === 'error') {
+        log().error({ threadKey, message: ev.message }, 'SDK 错误事件');
       }
       await streamer.onEvent(chatId, threadKey, ev, pool.getMeta(threadKey)?.cwd);
       if (ev.kind === 'result') {

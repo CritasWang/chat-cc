@@ -62,5 +62,6 @@ export function buildFeishuMcpServer(deps: FeishuMcpDeps) {
     name: 'feishu',
     version: '1.0.0',
     tools: [sendMessageTool, pingTool],
+    alwaysLoad: true,
   });
 }

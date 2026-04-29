@@ -109,6 +109,41 @@ function colorFor(state: LiveCardState): 'blue' | 'green' | 'red' | 'orange' {
 }
 
 function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max) + '\n\n… （已截断）';
+  let out = s.length <= max ? s : s.slice(0, max) + '\n\n… （已截断）';
+  return limitTables(out);
+}
+
+/**
+ * 飞书卡片有表格数量上限（ErrCode 11310: card table number over limit）。
+ * 当 Markdown 中表格过多时，将多余的表格转为纯文本列表以避免 400 错误。
+ */
+function limitTables(s: string, max = 3): string {
+  const sepRegex = /^\|[-:\s|]+\|$/gm;
+  const matches = s.match(sepRegex);
+  if (!matches || matches.length <= max) return s;
+
+  let tableIdx = 0;
+  let inTable = false;
+
+  return s
+    .split('\n')
+    .map((line) => {
+      const isTableLine = /^\s*\|/.test(line);
+      const isSep = isTableLine && /^[\s|:-]+$/.test(line);
+
+      if (isSep && !inTable) {
+        inTable = true;
+        tableIdx++;
+      }
+      if (!isTableLine) inTable = false;
+
+      if (!isTableLine || tableIdx <= max) return line;
+      if (isSep) return '';
+      return line
+        .replace(/^\|\s*/, '  ')
+        .replace(/\s*\|$/, '')
+        .replace(/\s*\|\s*/g, ' | ');
+    })
+    .filter((l) => l !== '')
+    .join('\n');
 }

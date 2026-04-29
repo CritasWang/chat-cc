@@ -87,6 +87,8 @@ export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate }) 
   const options: Options = {
     cwd,
     allowedTools: cfg.claude_allowed_tools,
+    persistSession: false,
+    thinking: { type: 'adaptive' },
     ...(cfg.claude_danger_mode
       ? { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }
       : {

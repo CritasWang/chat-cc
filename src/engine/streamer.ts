@@ -1,6 +1,7 @@
 import { log } from '../logger.js';
 import { previewJson } from '../utils.js';
 import { renderLiveCard, type LiveCardState } from '../feishu/cards/live.js';
+import { card, cardHeader, md } from '../feishu/cards/base.js';
 import { renderAskUserCard, parseAskUserInput } from '../feishu/cards/ask-user.js';
 import type { Replier } from '../feishu/replier.js';
 import type { EngineEvent, UsageSnapshot } from './events.js';
@@ -137,8 +138,55 @@ export class LiveStreamer {
     turn.chain = turn.chain.then(async () => {
       if (!turn.messageId) return;
       const ok = await this.deps.replier.patchCard(turn.messageId, renderLiveCard(turn.state));
-      if (ok) turn.lastPatchAt = Date.now();
+      if (ok) {
+        turn.lastPatchAt = Date.now();
+        return;
+      }
+      // 卡片更新失败 — 仅在终态（done/error）做 fallback
+      const isTerminal = turn.state.phase === 'done' || turn.state.phase === 'error';
+      if (!isTerminal) return;
+
+      const fullText = turn.state.assistantBuf;
+      // 用精简卡片重试（去掉正文，仅保留状态信息）
+      const minState: LiveCardState = { ...turn.state, assistantBuf: '（内容过长，已作为消息发送 ↓）' };
+      await this.deps.replier.patchCard(turn.messageId, renderLiveCard(minState));
+      // 全量内容分批发送为文本消息
+      if (fullText.trim()) {
+        await this.sendBatchedMarkdown(turn.chatId, fullText);
+      }
     });
     await turn.chain;
   }
+
+  /** 将长文本分段发送为飞书 Markdown 卡片 */
+  private async sendBatchedMarkdown(chatId: string, text: string, chunkSize = 3500): Promise<void> {
+    const chunks = splitByParagraph(text, chunkSize);
+    const total = chunks.length;
+    for (let i = 0; i < total; i++) {
+      const title = total === 1 ? '📄 完整内容' : `📄 内容 (${i + 1}/${total})`;
+      await this.deps.replier.sendCard(chatId, card(cardHeader(title, 'grey'), [md(chunks[i]!)]));
+    }
+  }
+}
+
+/** 按段落边界拆分长文本，每段不超过 maxLen 字符 */
+function splitByParagraph(text: string, maxLen: number): string[] {
+  const paragraphs = text.split(/\n{2,}/);
+  const chunks: string[] = [];
+  let buf = '';
+
+  for (const p of paragraphs) {
+    const candidate = buf ? buf + '\n\n' + p : p;
+    if (candidate.length > maxLen && buf) {
+      chunks.push(buf);
+      buf = p.length > maxLen ? p.slice(0, maxLen) : p;
+    } else if (candidate.length > maxLen) {
+      chunks.push(candidate.slice(0, maxLen));
+      buf = '';
+    } else {
+      buf = candidate;
+    }
+  }
+  if (buf) chunks.push(buf);
+  return chunks.length > 0 ? chunks : [text.slice(0, maxLen)];
 }
