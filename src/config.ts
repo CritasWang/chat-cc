@@ -34,7 +34,7 @@ const ConfigSchema = z.object({
   idle_check_seconds: z.number().int().positive().default(60),
 
   approval_timeout_ms: z.number().int().positive().default(120_000),
-  auto_approve_tools: z.array(z.string()).default(['^(Read|Glob|Grep|LS|LSP|WebFetch|WebSearch|TodoWrite|AskUserQuestion|TaskCreate|TaskUpdate|TaskList|TaskGet|NotebookRead|PushNotification)$']),
+  auto_approve_tools: z.array(z.string()).default(['^(Read|Glob|Grep|LS|LSP|WebFetch|WebSearch|AskUserQuestion|TaskCreate|TaskUpdate|TaskList|TaskGet|NotebookRead|PushNotification)$']),
 
   mcp_feishu_rate_limit_ms: z.number().int().nonnegative().default(10_000),
 

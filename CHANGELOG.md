@@ -1,5 +1,31 @@
 # Changelog
 
+## v3.1.0 (2026-06-03)
+
+依赖全面升级 —— Claude Agent SDK 跨版本 + 工具链 major 更新。功能与对外行为不变，已通过 build / CLI / smoke 验证。
+
+### Changed
+
+- **核心运行时 SDK**
+  - `@anthropic-ai/claude-agent-sdk` 0.2.123 → **0.3.161**
+  - `@larksuiteoapi/node-sdk` 1.62.0 → **1.66.1**
+  - `pino` 9 → **10**，`pino-pretty` 11 → **13**
+  - `yaml` 2.6 → **2.9**，`zod` 4.3.6 → **4.4.3**
+  - `@anthropic-ai/sdk`（agent-sdk 0.3 改为 peerDependency）随之 0.81 → **0.100.1**
+- **构建工具链**
+  - `typescript` 5.6 → **6.0**
+  - `vitest` 2.1 → **4.1**
+  - `@types/node` 22 → **25**，`tsx` 4.19 → **4.22**
+
+### Removed
+
+- **`auto_approve_tools` 默认值清理** — 移除已过时的 `TodoWrite`（SDK 0.3 起改用 Task 工具，`TaskCreate/Update/List/Get` 已在白名单）
+
+### Notes
+
+- **agent-sdk 0.2→0.3 破坏点核对（项目代码均兼容，无需改动）**：移除 v2 session API（项目用 `query()`）、MCP 默认后台连接（feishu server 已设 `alwaysLoad: true`）、`TodoWrite`→Task 工具、错误码调整（`events.ts` 仅读 `is_error`，不匹配错误字符串）、`@anthropic-ai/sdk`/`@modelcontextprotocol/sdk` 转为 peerDependency
+- **pino 10** 唯一破坏性变更是放弃 Node 18 支持，项目要求 `node >=20.11`，不受影响
+
 ## v3.0.1 (2026-04-22)
 
 代码质量提升 + 功能增强 — 14 项修复与改进。
