@@ -15,10 +15,22 @@ export interface LiveCardState {
   stateless?: boolean;
   /** 当前工作目录，用于在卡片中展示项目名称 */
   cwd?: string;
+  /** 由「无活跃会话 → 自动降级到 /ask」触发，卡片顶部显示醒目提示 */
+  fallbackFromNoSession?: boolean;
 }
 
 export function renderLiveCard(state: LiveCardState): InteractiveCard {
   const elems: unknown[] = [];
+
+  if (state.fallbackFromNoSession) {
+    elems.push(
+      md(
+        '⚠️ **当前无活跃会话** — 本条按一次性提问（`/ask`）处理，**不保留上下文**。\n' +
+          '如需多轮连续对话，请先发送 `/session start @项目别名` 或 `/session start <项目路径>` 开启会话。',
+      ),
+    );
+    elems.push(hr());
+  }
 
   if (state.assistantBuf) {
     elems.push(md(truncate(state.assistantBuf, 4500)));

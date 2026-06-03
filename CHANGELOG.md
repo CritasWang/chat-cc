@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.1.1 (2026-06-03)
+
+修复 issue #4：会话被 idle 回收后无法续接多轮上下文，并改进无活跃会话场景的引导。
+
+### Fixed
+
+- **会话 idle 回收后丢失「当前会话」指针（issue #4 核心）** — `SessionPool.stop()` 在 `keepMeta` 模式（idle 超时自动回收、`restartAll` 前临时停）下会误删 `activeByUser` 活跃指针，导致会话静置超过 `idle_timeout_minutes`（默认 30 分钟）后再发消息被判为「无活跃会话」、静默降级到一次性 `/ask`、丢失多轮上下文（`numTurns` 退回 1）。现仅在彻底销毁（`/session stop`）时清除指针；idle 回收保留指针，后续消息凭磁盘 meta + SDK `resumeId` 懒恢复同一会话
+- **降级到 `/ask` 时醒目提示** — `router` 检测到「无活跃会话」自动降级到 `/ask` 时，流式卡片顶部显示警告：本条按一次性提问处理、**不保留上下文**，并引导用户先 `/session start` 开启会话
+- **`/session start` 路径不存在引导** — 工作目录不存在时，错误卡片补充完整用法（`@项目别名` / 绝对路径 / Windows 路径示例）
+
 ## v3.1.0 (2026-06-03)
 
 依赖全面升级 —— Claude Agent SDK 跨版本 + 工具链 major 更新。功能与对外行为不变，已通过 build / CLI / smoke 验证。

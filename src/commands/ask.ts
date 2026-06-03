@@ -24,7 +24,7 @@ export function interruptAsk(key: string): boolean {
  * 无状态单次提问 — 每次起一个独立 query，不保留上下文。
  * 用流式卡片即时反馈（立刻发占位卡片，SDK 事件到来时节流 patch）。
  */
-export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate }) => {
+export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate }, extra) => {
   const trimmed = args.trim();
   if (!trimmed) return '用法: /ask [@项目别名] <问题>';
 
@@ -51,6 +51,7 @@ export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate }) 
     phase: 'streaming',
     stateless: true,
     cwd,
+    ...(extra?.fallbackFromNoSession ? { fallbackFromNoSession: true } : {}),
   };
 
   const placeholderMid = await replier.replyCard(meta.messageId, renderLiveCard(state));

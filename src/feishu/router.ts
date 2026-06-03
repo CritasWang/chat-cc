@@ -57,7 +57,7 @@ export class Router {
         if (result.includes('没有活跃的会话')) {
           const ask = this.cmds.get('ask');
           if (ask) {
-            const r = await ask.fn(trimmed, meta, this.deps);
+            const r = await ask.fn(trimmed, meta, this.deps, { fallbackFromNoSession: true });
             if (r) await this.replyAsCard(meta.messageId, r);
             return;
           }

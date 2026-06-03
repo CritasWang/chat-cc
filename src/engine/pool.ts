@@ -230,10 +230,15 @@ export class SessionPool {
     if (!s && !this.meta.has(key)) return false;
     // 先从池里摘除再等 close；若 close() 因 SDK pump 卡死挂住，后续 start 也能直接新建
     if (s) this.sessions.delete(key);
-    for (const [u, k] of this.activeByUser) {
-      if (k === key) this.activeByUser.delete(u);
+    // keepMeta=true（idle 回收 / restartAll 前的临时停）保留 activeByUser 指针，
+    // 使后续 getOrResumeActive 能凭磁盘 meta + SDK resumeId 懒恢复同一会话、延续多轮上下文；
+    // 仅 keepMeta=false（彻底销毁，如 /session stop）才清除活跃指针与 meta。
+    if (!keepMeta) {
+      for (const [u, k] of this.activeByUser) {
+        if (k === key) this.activeByUser.delete(u);
+      }
+      this.meta.delete(key);
     }
-    if (!keepMeta) this.meta.delete(key);
     this.deps.onStop?.(key, keepMeta);
     if (s) {
       await s.close().catch((err) => log().warn({ err, threadKey: key }, 'session close 异常（已忽略）'));

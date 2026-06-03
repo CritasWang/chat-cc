@@ -82,7 +82,14 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
       await replier.replyCard(
         meta.messageId,
         card(cardHeader('❌ 路径不存在', 'red'), [
-          md(`指定的工作目录不存在：\n\`${cwd}\`\n\n请检查路径是否正确，或在 config.yaml 的 projects 中配置别名。`),
+          md(
+            `指定的工作目录不存在：\n\`${cwd}\`\n\n` +
+              '请检查路径是否正确，或在 config.yaml 的 `projects` 中配置别名。\n\n' +
+              '**用法**：\n' +
+              '- `/session start @项目别名`（推荐，在 config.yaml 中预设）\n' +
+              '- `/session start <项目绝对路径>`\n\n' +
+              '*Windows 路径示例：`/session start D:/projects/demo`*',
+          ),
           hr(),
           btnRow([
             cmdBtn('📂 查看项目', 'project', ''),
