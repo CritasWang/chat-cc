@@ -7,6 +7,8 @@ export interface PoolDeps {
   buildConfig: (threadKey: string, cwd: string, resumeId?: string) => SessionConfig;
   onEvent: (threadKey: string, e: EngineEvent) => void | Promise<void>;
   onStop?: (threadKey: string, keepMeta: boolean) => void;
+  /** 带外通知（如 resume 失效已自愈），由 Session 经 pool 透传到上层 */
+  onNotice?: (threadKey: string, n: { text: string; staleSessionId?: string }) => void;
   /** 空闲多久自动 disconnect（毫秒）；<=0 表示关闭 */
   idleTimeoutMs?: number;
   idleCheckIntervalMs?: number;
@@ -193,6 +195,18 @@ export class SessionPool {
     }
   }
 
+  /** 清除内存 meta 里的 sessionId（resume 失效自愈后调用，避免再用失效 id） */
+  clearSessionId(threadKey: string): void {
+    const m = this.meta.get(threadKey);
+    if (m) m.sessionId = undefined;
+  }
+
+  private handleNotice(threadKey: string, n: { text: string; staleSessionId?: string }): void {
+    // resume 失效已自愈：清掉内存 meta 的失效 sessionId（新会话 init 会写入新 id），再透传上层
+    this.clearSessionId(threadKey);
+    this.deps.onNotice?.(threadKey, n);
+  }
+
   start(keyInput: ThreadKey, cwd: string): Session {
     const key = threadKey(keyInput);
     const userKey = keyInput.senderId || keyInput.chatId;
@@ -209,6 +223,7 @@ export class SessionPool {
     const sess = new Session({
       ...cfg,
       onEvent: (e) => this.handleEvent(key, e),
+      onNotice: (n) => this.handleNotice(key, n),
     });
     sess.start();
 

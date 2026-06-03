@@ -15,6 +15,7 @@ import { buildCardActionHandler } from './feishu/card-action.js';
 import { renderStatusCard } from './feishu/cards/status.js';
 import { renderSessionListCard } from './feishu/cards/session.js';
 import { renderHelpCard } from './feishu/cards/help.js';
+import { card, cardHeader, md } from './feishu/cards/base.js';
 import { askCommand } from './commands/ask.js';
 import { sessionCommand } from './commands/session.js';
 import { sendCommand } from './commands/send.js';
@@ -88,6 +89,18 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
   const pool = new SessionPool({
     idleTimeoutMs: cfg.idle_timeout_minutes * 60_000,
     idleCheckIntervalMs: cfg.idle_check_seconds * 1000,
+
+    onNotice: (threadKey, n) => {
+      const { chatId } = parseThreadKey(threadKey);
+      void replier.sendCard(
+        chatId,
+        card(cardHeader('⚠️ 会话已重置', 'orange'), [
+          md(`${n.text}（此前对话历史未能恢复）。\n\n直接继续发消息即可，新会话会正常累积上下文。`),
+        ]),
+      );
+      // meta.sessionId 已被 pool 清空，落盘覆盖以清掉磁盘上的失效 id（防重启后再用旧 id resume）
+      persistSession(threadKey);
+    },
 
     buildConfig: (threadKey, cwd, resumeId) => {
       const { chatId } = parseThreadKey(threadKey);

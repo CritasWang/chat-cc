@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.1.2 (2026-06-03)
+
+修复 resume 失效导致会话死亡：自动降级为新建会话并重放消息。
+
+### Fixed
+
+- **resume 失效自愈** — 会话被 idle 回收后凭磁盘 `sessionId` 懒恢复时，若 SDK 本地 conversation 已被清理，resume 会失败。旧实现下整个 Session 会死亡（先回一张错误卡，再 `session pump 异常退出`，此后消息石沉大海）。现检测到 `No conversation found` 即自动丢弃失效 sessionId、用不带 resume 的新会话重建并**重放刚才那条消息**，用户直接得到回答；同时发卡提示「原会话上下文已过期，已新建会话继续」（旧对话历史确已丢失），并清除内存与磁盘上的失效 sessionId，避免重启后反复 resume 失败。新增 `test/engine/session.test.ts` 覆盖自愈全链路。
+
 ## v3.1.1 (2026-06-03)
 
 修复 issue #4：会话被 idle 回收后无法续接多轮上下文，并改进无活跃会话场景的引导。
