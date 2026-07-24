@@ -159,7 +159,7 @@ export const askCommand: CommandFn = async (
       allowedTools: cfg.claude_allowed_tools,
       persistSession: false,
       thinking: { type: "adaptive" },
-      env: buildAgentEnv(cfg.agent_env_allowlist, envOverrides),
+      env: buildAgentEnv(envOverrides),
       ...(cfg.claude_danger_mode
         ? {
             permissionMode: "bypassPermissions" as const,

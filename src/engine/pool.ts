@@ -354,7 +354,7 @@ export class SessionPool {
     const isTopic = isTopicThreadKey(key);
     const userKey = userKeyOf(keyInput);
     const prior = this.meta.get(key);
-    const existing = this.sessions.get(key);
+    const existing = this.get(key);
     if (existing) {
       this.touch(key);
       if (!isTopic) this.activate(userKey, key);
@@ -542,6 +542,9 @@ export class SessionPool {
     danger: boolean | undefined,
     effective: boolean,
   ): Promise<'inplace' | 'restarted' | 'meta' | 'missing'> {
+    // restart/reset 的 close 完成后再取得 lifecycle token。否则 danger 请求会在旧实例
+    // 正在退出时抢走 token，导致原重启被取消，并对半死实例调用 setDanger。
+    await this.waitForClosing(key);
     const token = this.beginLifecycle(key);
     const m = this.meta.get(key);
     try {
@@ -550,7 +553,7 @@ export class SessionPool {
       else m.danger = danger;
       this.deps.onMetaChange?.(key);
 
-      const s = this.sessions.get(key);
+      const s = this.get(key);
       if (!s) return 'meta';
 
       if (s.setDanger && (await s.setDanger(effective))) {
@@ -577,9 +580,14 @@ export class SessionPool {
     key: string,
     { keepMeta = true, reason = 'unknown' as StopReason } = {},
   ): Promise<boolean> {
-    // 显式 stop/destroy 优先于任何尚未完成的 restart/reset，后者完成 close 后不得再 start。
-    this.lifecycleTokens.delete(key);
-    return this.stopInternal(key, { keepMeta, reason });
+    // stop 自己持有 token 直到 close/onStop 全部结束。这样先发起的 restart/reset 会被取消，
+    // 后发起的 lifecycle 操作则只能等待 closing 完成，不会与旧实例短期并存。
+    const token = this.beginLifecycle(key);
+    try {
+      return await this.stopInternal(key, { keepMeta, reason });
+    } finally {
+      this.endLifecycle(key, token);
+    }
   }
 
   private async stopInternal(
@@ -603,8 +611,10 @@ export class SessionPool {
       reason,
       promise: Promise.resolve(),
     };
-    state.promise = this.finishStop(key, s, state);
+    // 先登记 closing，再进入可能同步调用第三方 close() 的 finishStop。
+    // Promise.then 让 finishStop 至少延后一 microtask，彻底关闭同步重入窗口。
     this.closing.set(key, state);
+    state.promise = Promise.resolve().then(() => this.finishStop(key, s, state));
     try {
       await state.promise;
       return true;
@@ -719,6 +729,14 @@ export class SessionPool {
 
   private endLifecycle(key: string, token: symbol): void {
     if (this.lifecycleTokens.get(key) === token) this.lifecycleTokens.delete(key);
+  }
+
+  private async waitForClosing(key: string): Promise<void> {
+    while (true) {
+      const state = this.closing.get(key);
+      if (!state) return;
+      await state.promise;
+    }
   }
 }
 

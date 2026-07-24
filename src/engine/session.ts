@@ -26,15 +26,30 @@ class MessageQueue {
   private wakeup: (() => void) | null = null;
   private closed = false;
 
-  push(m: SDKUserMessage): void {
-    if (this.closed) return;
+  push(m: SDKUserMessage): boolean {
+    if (this.closed) return false;
     this.buf.push(m);
     this.wakeup?.();
     this.wakeup = null;
+    return true;
+  }
+
+  /** 尚未交给 SDK prompt iterator 的消息；这些消息可证明没有被执行。 */
+  buffered(): SDKUserMessage[] {
+    return [...this.buf];
+  }
+
+  takeBuffered(): SDKUserMessage[] {
+    const buffered = this.buf;
+    this.buf = [];
+    return buffered;
   }
 
   close(): void {
     this.closed = true;
+    // close 表示旧 consumer 永久作废；安全迁移方必须在调用前显式 takeBuffered()。
+    // 不清空会导致 stream() 醒来后先 yield 旧缓冲，再检查 closed。
+    this.buf = [];
     this.wakeup?.();
     this.wakeup = null;
   }
@@ -61,19 +76,19 @@ export class Session {
   private started = false;
   createdAt = new Date();
   lastUsedAt = new Date();
-  /** 已投递进当前 query 但尚未被 SDK result 确认的消息（仅 stale-resume 自愈时重放） */
+  /** 已发送但尚未被 SDK result 确认；仅 stale-resume 或仍在本地 buffer 时允许重放。 */
   private pending: SDKUserMessage[] = [];
   /** 最近一次已确认失效的 resume ID；只阻止同一个坏 ID 无限自愈循环。 */
   private rejectedResumeId?: string;
   /** close() 后置位：pump 停止分发事件，防止被替换的旧会话（僵尸）继续刷卡片/记账 */
   private closed = false;
-  /** 泵异常退出后置位，下次 send() 触发自动恢复 */
-  private pumpCrashed = false;
+  /** 当前 pump 已结束或异常退出；下次 send() 前必须重建 query。 */
+  private pumpNeedsRestart = false;
   private abortController = new AbortController();
   private turnTimer?: NodeJS.Timeout;
   private timeoutError?: string;
-  /** 当前投递批次是否已经向上层发出 result；用于避免 query 收尾再补一条重复 error。 */
-  private terminalSinceLastSend = false;
+  /** 当前 pump 是否至少产出过一个 result；用于区分正常收尾与启动即退出。 */
+  private terminalSeenInPump = false;
 
   readonly cwd: string;
 
@@ -92,6 +107,7 @@ export class Session {
   }
 
   private launchPump(): void {
+    this.terminalSeenInPump = false;
     this.pumpPromise = this.runLoop().then(
       () => this.handlePumpEnd(),
       (err) => this.handlePumpEnd(err),
@@ -100,28 +116,59 @@ export class Session {
 
   private handlePumpEnd(err?: unknown): void {
     if (this.closed) return;
-    if (this.terminalSinceLastSend) {
-      // Abort/SDK 收尾可能在 result 之后结束 async generator。该轮已经有终态，
-      // 这里只标记下次 send 重建 query，不能再制造第二张 error 卡。
-      if (err) log().warn({ err, thread: this.threadKey }, 'session pump 在终态后退出，等待下次发送恢复');
+
+    // runLoop Promise 的完成回调晚于 async generator 实际耗尽。窗口内的新 send 可能已经
+    // 写入旧 queue；只重放仍留在 queue.buf 的消息，因为它们尚未交给 SDK，绝无副作用。
+    const buffered = this.queue.buffered();
+    const bufferedSet = new Set(buffered);
+    const unsafePendingCount = this.pending.reduce(
+      (count, message) => count + (bufferedSet.has(message) ? 0 : 1),
+      0,
+    );
+    const terminalSeen = this.terminalSeenInPump;
+    const shouldReportError = !terminalSeen || unsafePendingCount > 0;
+    let autoRecovered = false;
+
+    if (terminalSeen && buffered.length > 0 && unsafePendingCount === 0) {
+      const replay = this.queue.takeBuffered();
+      this.pending = replay;
+      try {
+        this.replacePump(replay, true);
+        autoRecovered = true;
+        log().warn(
+          { thread: this.threadKey, sessionId: this.sessionId, replayedCount: replay.length },
+          'session pump 收尾窗口内有未消费消息，已自动迁移到新 pump',
+        );
+      } catch (recoverErr) {
+        this.pumpNeedsRestart = true;
+        this.reportPumpError(recoverErr);
+        return;
+      }
+    } else {
+      // async generator 已结束，下一条 send 必须先重建 query。这里不把正常收尾误报为 crash。
+      this.pumpNeedsRestart = true;
+    }
+
+    if (!shouldReportError) {
+      if (err) {
+        log().warn({ err, thread: this.threadKey }, 'session pump 在终态后退出，等待后续发送恢复');
+      }
+      if (autoRecovered) return;
       this.clearTurnTimer();
       this.timeoutError = undefined;
-      this.pumpCrashed = true;
       return;
     }
-    this.handlePumpCrash(err ?? new Error(this.timeoutError ?? 'session pump 意外结束'));
+
+    this.reportPumpError(err ?? new Error(this.timeoutError ?? 'session pump 意外结束'));
   }
 
-  /** 泵异常收敛：已 close 的会话静默，否则记日志 → 置位 pumpCrashed → 发 error 事件 */
-  private handlePumpCrash(err: unknown): void {
+  /** 泵异常上报：调用方必须先把 pump 状态切到“可恢复”或已完成自动恢复。 */
+  private reportPumpError(err: unknown): void {
     // 已 close 的会话（如 /danger 重启后被替换的旧实例）的 pump 收尾异常不再上报，
     // 避免向已终结的直播卡片发送虚假 error 事件
     if (this.closed) return;
     log().error({ err, thread: this.threadKey }, 'session pump 异常退出');
     this.clearTurnTimer();
-    // 先置位再发事件：下游 onEvent 拿到 error 时 pumpCrashed 已为 true，
-    // 后续 send() 能正确触发 recoverFromCrash()
-    this.pumpCrashed = true;
     const message = this.timeoutError ?? String(err);
     this.timeoutError = undefined;
     const reported = this.cfg.onEvent?.({ kind: 'error', message });
@@ -149,9 +196,8 @@ export class Session {
   send(text: string): void {
     if (this.closed) throw new Error(`session ${this.threadKey} is closed`);
     this.lastUsedAt = new Date();
-    if (this.pumpCrashed) {
-      // 泵已崩溃：自动恢复（重建空 query，不重放 pending，上下文经 sessionId resume）
-      this.recoverFromCrash();
+    if (this.pumpNeedsRestart) {
+      this.restartPump();
     }
     if (!this.started) this.start();
     const m: SDKUserMessage = {
@@ -159,8 +205,13 @@ export class Session {
       message: { role: 'user', content: text },
       parent_tool_use_id: null,
     };
-    this.terminalSinceLastSend = false;
-    this.queue.push(m);
+    if (!this.queue.push(m)) {
+      // JS 同步段内 close() 无法插入这里；该分支用于防未来重构或异常 queue 状态静默吞消息。
+      if (this.closed) throw new Error(`session ${this.threadKey} is closed`);
+      this.pumpNeedsRestart = true;
+      this.restartPump();
+      if (!this.queue.push(m)) throw new Error(`session ${this.threadKey} queue is closed`);
+    }
     this.pending.push(m);
     this.armTurnTimer();
   }
@@ -191,28 +242,48 @@ export class Session {
   }
 
   /**
-   * 泵崩溃后自动恢复：使用当前 sessionId 重建 query，**不自动重放 pending**。
-   * 无法证明 pending 中消息的副作用尚未执行——工具可能已成功但 result 未产出。
-   * 仅 stale-resume 自愈路径可安全重放（已知旧会话已不存在）。
+   * pump 结束后重建 query。不会重放已经交给 SDK 的 pending（其副作用状态未知），
+   * 只迁移仍留在 MessageQueue.buf、可证明从未交给 SDK 的消息。
    */
-  private recoverFromCrash(): void {
+  private restartPump(): void {
+    const oldQueue = this.queue;
+    const buffered = oldQueue.takeBuffered();
+    const bufferedSet = new Set(buffered);
+    const droppedCount = this.pending.reduce(
+      (count, message) => count + (bufferedSet.has(message) ? 0 : 1),
+      0,
+    );
+    this.pending = buffered;
+    this.replacePump(buffered, true);
+    log().warn(
+      {
+        thread: this.threadKey,
+        sessionId: this.sessionId,
+        droppedCount,
+        replayedBufferedCount: buffered.length,
+      },
+      '泵已恢复（仅迁移尚未交给 SDK 的缓冲消息）',
+    );
+  }
+
+  /** 同步替换 queue/query；messages 必须是可证明尚未交给旧 SDK 的消息。 */
+  private replacePump(messages: SDKUserMessage[], withResume: boolean): void {
     const oldQueue = this.queue;
     const oldQ = this.q;
-    this.queue = new MessageQueue();
-    this.abortController = new AbortController();
-    const droppedCount = this.pending.length;
-    this.pending = [];
+    const nextQueue = new MessageQueue();
+    for (const message of messages) {
+      if (!nextQueue.push(message)) throw new Error('new session queue unexpectedly closed');
+    }
 
+    this.queue = nextQueue;
+    this.abortController = new AbortController();
     oldQueue.close();
     oldQ?.close();
 
-    // 重建空 query（不重放 pending），每次 send 时 push 入队自然触发消费
-    this.q = query({ prompt: this.queue.stream(), options: this.buildOptions(true) });
-    this.pumpCrashed = false;
+    this.q = query({ prompt: this.queue.stream(), options: this.buildOptions(withResume) });
+    this.pumpNeedsRestart = false;
     this.started = true;
     this.launchPump();
-    log().warn({ thread: this.threadKey, sessionId: this.sessionId, droppedCount },
-      '泵崩溃已恢复（pending 已丢弃，等待新消息）');
   }
 
   async close(timeoutMs = 5000): Promise<void> {
@@ -275,7 +346,7 @@ export class Session {
               ev.ok = false;
               ev.text = this.timeoutError;
             }
-            this.terminalSinceLastSend = true;
+            this.terminalSeenInPump = true;
             this.timeoutError = undefined;
             this.clearTurnTimer();
             this.pending = [];
@@ -312,12 +383,16 @@ export class Session {
     const oldQ = this.q;
     const oldQueue = this.queue;
     this.queue = new MessageQueue();
-    for (const m of this.pending) this.queue.push(m);
+    for (const m of this.pending) {
+      if (!this.queue.push(m)) throw new Error('new session queue unexpectedly closed');
+    }
 
     oldQueue.close();
     oldQ?.close();
 
     this.q = query({ prompt: this.queue.stream(), options: this.buildOptions(false) });
+    // 当前 runLoop 会在下一次 while 迭代继续消费新 query；这里不能另起第二个 pump。
+    this.terminalSeenInPump = false;
     log().warn(
       { thread: this.threadKey, staleSessionId: stale },
       'resume 失效，已降级为新建会话并重放',

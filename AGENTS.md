@@ -13,6 +13,7 @@
 - 不要让 engine 直接 `import` 具体卡片渲染函数。engine 只发 `EngineEvent`，渲染归 `feishu/cards/*`。
 - Session 的 cwd 必须从 config 的 `default_cwd` 或 `/session start @alias` 解析来，不要写死。
 - 不要硬编码路径。所有运行时路径通过 `src/paths.ts` 获取（`chatccHome()`、`configPath()`、`pidPath()` 等）。
+- **任何 Agent 启动、停止、重启或查询 daemon 状态时，必须使用已安装的全局命令**：`chat-cc start|stop|restart|status`（`chatcc` 等价）。不要用 `node dist/cli/index.js start`、`npm start`、直接运行 `src/main.ts` 或手工 `kill` 代替；这些做法会绕过全局安装入口或 PID/lock 状态机。完整流程见 `docs/operations.md`。
 
 ## 代码地图
 
@@ -80,8 +81,12 @@ node dist/cli/index.js --help
 node dist/cli/index.js version
 node dist/cli/index.js doctor
 
-# 前台启动（需要有效的飞书凭证）
-node dist/cli/index.js start --foreground
+# 守护进程操作必须走全局 CLI（需要有效的飞书凭证）
+npm install -g .
+chat-cc start --foreground
+chat-cc stop
+chat-cc restart
+chat-cc status
 
 # 开发模式
 npm run dev          # tsx watch（前台运行）

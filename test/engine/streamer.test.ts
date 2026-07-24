@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { LiveStreamer } from '../../src/engine/streamer.js';
+import { LiveStreamer, splitByParagraph } from '../../src/engine/streamer.js';
 import { initLogger } from '../../src/logger.js';
 
 initLogger('error');
@@ -60,6 +60,18 @@ describe('LiveStreamer 生命周期隔离', () => {
     expect(replier.sendCard).toHaveBeenCalled();
   });
 
+  it('idle /stop 未收到终态时，新 prompt 边界会清除中断抑制', async () => {
+    const replier = fakeReplier();
+    const streamer = new LiveStreamer({ replier: replier as never, throttleMs: 1 });
+    const key = 'oc_x:ou_x:default';
+    await streamer.markInterrupted(key);
+
+    streamer.beginTurn(key);
+    await streamer.onEvent('oc_x', key, { kind: 'result', ok: true, text: 'next turn', durationMs: 1 });
+
+    expect(replier.sendCard).toHaveBeenCalled();
+  });
+
   it('首次发卡异常时仍发送终态降级消息且不向 engine 抛错', async () => {
     const replier = fakeReplier({ failFirstSend: true });
     const streamer = new LiveStreamer({ replier: replier as never, throttleMs: 1 });
@@ -73,5 +85,12 @@ describe('LiveStreamer 生命周期隔离', () => {
       }),
     ).resolves.toBeUndefined();
     expect(replier.sendCard).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('splitByParagraph', () => {
+  it('空白内容不生成空卡片分片', () => {
+    expect(splitByParagraph('', 100)).toEqual([]);
+    expect(splitByParagraph('   \n', 100)).toEqual([]);
   });
 });

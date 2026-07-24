@@ -203,7 +203,7 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
           sandbox: danger ? 'danger-full-access' : cfg.codex_sandbox,
           ...(cfg.codex_model ? { model: cfg.codex_model } : {}),
           ...(input.resumeId ? { resumeId: input.resumeId } : {}),
-          env: buildAgentEnv(cfg.agent_env_allowlist),
+          env: buildAgentEnv(),
           turnTimeoutMs: cfg.claude_session_timeout_min * 60_000,
           onEvent: input.onEvent,
           onNotice: input.onNotice,
@@ -231,7 +231,7 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
       };
       // API profile：会话级覆盖 > 全局当前（可选功能）
       const envOverrides = apiProfiles.envOverridesFor(input.apiProfile);
-      extra['env'] = buildAgentEnv(cfg.agent_env_allowlist, envOverrides);
+      extra['env'] = buildAgentEnv(envOverrides);
       // canUseTool 始终安装、allowDangerouslySkipPermissions 始终开启：
       // 让 /danger 能通过 SDK setPermissionMode 在线双向切换（default ↔ bypassPermissions），
       // 免重启、不打断运行中的任务（见 Session.setDanger / pool.setSessionDanger）。
@@ -335,6 +335,8 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
     const requesterId = requesterIds[0] ?? parseThreadKey(threadKey).senderId;
     if (requesterId) requesterByThread.set(threadKey, requesterId);
     try {
+      // 新 prompt 是明确的轮次边界：清掉可能因 idle /stop 未收到终态而残留的抑制标记。
+      streamer.beginTurn(threadKey);
       sess.send(messages.join('\n\n'));
     } catch (err) {
       requesterByThread.delete(threadKey);

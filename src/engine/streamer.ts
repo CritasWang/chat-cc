@@ -78,6 +78,15 @@ export class LiveStreamer {
     return this.turns.get(threadKey)?.replyTarget ?? this.replyTargets.get(threadKey);
   }
 
+  /**
+   * Session 真正接收一条新 prompt 前清除旧的中断抑制。
+   * idle 状态执行 /stop 时 SDK 可能不会补发 result/error；若不在发送边界清理，
+   * 下一轮事件会被最长 5 分钟的旧标记整体吞掉。
+   */
+  beginTurn(threadKey: string): void {
+    this.clearInterrupted(threadKey);
+  }
+
   /** PendingQueue 重试耗尽后的用户可见通知；话题会话沿用尚未消费的回复锚点。 */
   async notifyQueueFailure(threadKey: string, chatId: string, text: string): Promise<void> {
     const target = this.replyTargets.get(threadKey);
@@ -428,6 +437,7 @@ export class LiveStreamer {
 /** 按段落边界拆分长文本，每段不超过 maxLen 字符 */
 export function splitByParagraph(text: string, maxLen: number): string[] {
   if (maxLen <= 0) throw new Error("maxLen must be positive");
+  if (!text.trim()) return [];
   const chunks: string[] = [];
   let offset = 0;
   while (offset < text.length) {
@@ -447,5 +457,5 @@ export function splitByParagraph(text: string, maxLen: number): string[] {
     chunks.push(text.slice(offset, offset + cut));
     offset += cut;
   }
-  return chunks.length > 0 ? chunks : [""];
+  return chunks;
 }

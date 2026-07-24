@@ -70,6 +70,32 @@ describe('SessionPool stop 状态机', () => {
     expect(created).toBe(1);
   });
 
+  it('调用 session.close 前已经发布 closing 状态，禁止同步重入取得半死会话', async () => {
+    const input = { chatId: 'oc_x', senderId: 'ou_x', slot: 'reentrant-close' };
+    const key = threadKey(input);
+    let pool!: SessionPool;
+    pool = new SessionPool({
+      createSession: ({ threadKey: sessionKey, cwd }) => ({
+        threadKey: sessionKey,
+        cwd,
+        createdAt: new Date(),
+        lastUsedAt: new Date(),
+        start() {},
+        send() {},
+        async interrupt() {},
+        async close() {
+          expect(pool.isClosing(key)).toBe(true);
+          expect(pool.get(key)).toBeUndefined();
+          expect(() => pool.start(input, cwd)).toThrow(/closing/);
+        },
+      }),
+      onEvent: () => {},
+    });
+    pool.start(input, '/tmp');
+
+    await expect(pool.stop(key, { keepMeta: true, reason: 'restart' })).resolves.toBe(true);
+  });
+
   it('session.start 同步失败时回滚新建 meta', async () => {
     const close = vi.fn(async () => {});
     const pool = new SessionPool({
@@ -178,6 +204,47 @@ describe('SessionPool stop 状态机', () => {
     expect(calls).toEqual([true, false]);
     expect(maxConcurrent).toBe(1);
     expect(pool.getMeta(key)?.danger).toBe(false);
+  });
+
+  it('danger 更新等待正在关闭的旧实例，并应用到 restart 后的新实例', async () => {
+    let releaseClose!: () => void;
+    const closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const firstSetDanger = vi.fn(async () => true);
+    const secondSetDanger = vi.fn(async () => true);
+    let created = 0;
+    const pool = new SessionPool({
+      createSession: ({ threadKey: key, cwd }) => {
+        created += 1;
+        const first = created === 1;
+        return {
+          threadKey: key,
+          cwd,
+          createdAt: new Date(),
+          lastUsedAt: new Date(),
+          start() {},
+          send() {},
+          async interrupt() {},
+          close: () => first ? closeGate : Promise.resolve(),
+          setDanger: first ? firstSetDanger : secondSetDanger,
+        };
+      },
+      onEvent: () => {},
+    });
+    const input = { chatId: 'oc_x', senderId: 'ou_x', slot: 'danger-restart' };
+    const key = threadKey(input);
+    pool.start(input, '/tmp');
+
+    const restarting = pool.restart(input, '/tmp');
+    await vi.waitFor(() => expect(pool.isClosing(key)).toBe(true));
+    const updating = pool.setSessionDanger(key, true, true);
+    expect(firstSetDanger).not.toHaveBeenCalled();
+    releaseClose();
+
+    await expect(restarting).resolves.toBeDefined();
+    await expect(updating).resolves.toBe('inplace');
+    expect(created).toBe(2);
+    expect(firstSetDanger).not.toHaveBeenCalled();
+    expect(secondSetDanger).toHaveBeenCalledWith(true);
   });
 
   it('idle sweep 不回收正在运行的长任务', async () => {

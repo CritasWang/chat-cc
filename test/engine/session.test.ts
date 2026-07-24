@@ -47,13 +47,32 @@ describe('Session resume 失效自愈', () => {
     expect(() => sess.send('lost')).toThrow(/closed/);
   });
 
+  it('close 会丢弃尚未交给 SDK 的本地缓冲', async () => {
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const consumed: string[] = [];
+    hoisted.responders.push(async function* (prompt) {
+      await readGate;
+      const message = await prompt[Symbol.asyncIterator]().next();
+      if (!message.done) consumed.push((message.value as any)?.message?.content);
+    });
+    const sess = new Session({ threadKey: 'c:u:close-buffer', cwd: '/tmp' });
+    sess.send('must not execute');
+
+    const closing = sess.close();
+    releaseRead();
+    await closing;
+    expect(consumed).toEqual([]);
+  });
+
   it('stale-resume 时降级为无 resume 新会话并重放消息', async () => {
     const events: any[] = [];
     const notices: any[] = [];
     const replayed: Array<string | undefined> = [];
 
     // 第一次（带 resume）：直接 yield 一个 stale result
-    hoisted.responders.push(async function* () {
+    hoisted.responders.push(async function* (prompt) {
+      await prompt[Symbol.asyncIterator]().next();
       yield staleResult();
     });
     // 第二次（无 resume）：先从 prompt 读出被重放的消息，再 yield 正常结果
@@ -107,9 +126,10 @@ describe('Session resume 失效自愈', () => {
     await sess.close();
   });
 
-  it('普通会话（无 resumeId）不追踪 pending、正常工作', async () => {
+  it('普通会话（无 resumeId）正常确认消息且不制造重复 error', async () => {
     const events: any[] = [];
-    hoisted.responders.push(async function* () {
+    hoisted.responders.push(async function* (prompt) {
+      await prompt[Symbol.asyncIterator]().next();
       yield { type: 'system', subtype: 'init', session_id: 'sid' };
       yield { type: 'result', is_error: false, result: 'ok', duration_ms: 1, num_turns: 1 };
     });
@@ -132,9 +152,38 @@ describe('Session resume 失效自愈', () => {
     await sess.close();
   });
 
+  it('query 确认终态后结束时，下一条消息才重建 pump 且不误报 crash', async () => {
+    const events: any[] = [];
+    const consumed: string[] = [];
+    for (const result of ['first', 'second']) {
+      hoisted.responders.push(async function* (prompt) {
+        const message = await prompt[Symbol.asyncIterator]().next();
+        consumed.push((message.value as any)?.message?.content);
+        yield { type: 'result', is_error: false, result, duration_ms: 1, num_turns: 1 };
+      });
+    }
+    const sess = new Session({
+      threadKey: 'c:u:graceful-end',
+      cwd: '/tmp',
+      onEvent: (event) => { events.push(event); },
+    });
+
+    sess.send('first');
+    await vi.waitFor(() => expect(events.filter((event) => event.kind === 'result')).toHaveLength(1));
+    await Promise.resolve();
+    sess.send('second');
+    await vi.waitFor(() => expect(events.filter((event) => event.kind === 'result')).toHaveLength(2));
+
+    expect(consumed).toEqual(['first', 'second']);
+    expect(events.some((event) => event.kind === 'error')).toBe(false);
+    expect(hoisted.calls).toHaveLength(2);
+    await sess.close();
+  });
+
   it('自愈通知回调抛错不会打断新 query 与消息重放', async () => {
     const events: any[] = [];
-    hoisted.responders.push(async function* () {
+    hoisted.responders.push(async function* (prompt) {
+      await prompt[Symbol.asyncIterator]().next();
       yield staleResult();
     });
     hoisted.responders.push(async function* (prompt) {
@@ -157,6 +206,46 @@ describe('Session resume 失效自愈', () => {
       expect(events.some((e) => e.kind === 'result' && e.ok)).toBe(true);
     });
     expect(sess.sessionId).toBe('fresh-after-notice-error');
+    await sess.close();
+  });
+
+  it('pump 收尾窗口内的新消息会迁移到新 query，不会静默丢失', async () => {
+    const events: any[] = [];
+    const consumed: string[] = [];
+    let sess!: Session;
+    let queuedSecond = false;
+
+    hoisted.responders.push(async function* (prompt) {
+      const first = await prompt[Symbol.asyncIterator]().next();
+      consumed.push((first.value as any)?.message?.content);
+      yield { type: 'result', is_error: false, result: 'first done', duration_ms: 1, num_turns: 1 };
+      // generator 在 result 后自然结束，模拟 SDK/transport 收尾。
+    });
+    hoisted.responders.push(async function* (prompt) {
+      const second = await prompt[Symbol.asyncIterator]().next();
+      consumed.push((second.value as any)?.message?.content);
+      yield { type: 'result', is_error: false, result: 'second done', duration_ms: 1, num_turns: 1 };
+    });
+
+    sess = new Session({
+      threadKey: 'c:u:pump-window',
+      cwd: '/tmp',
+      onEvent: (event) => {
+        events.push(event);
+        if (event.kind === 'result' && event.text === 'first done' && !queuedSecond) {
+          queuedSecond = true;
+          sess.send('second');
+        }
+      },
+    });
+    sess.send('first');
+
+    await vi.waitFor(() => {
+      expect(events.filter((event) => event.kind === 'result')).toHaveLength(2);
+    });
+    expect(consumed).toEqual(['first', 'second']);
+    expect(events.some((event) => event.kind === 'error')).toBe(false);
+    expect(hoisted.calls).toHaveLength(2);
     await sess.close();
   });
 });

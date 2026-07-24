@@ -124,7 +124,7 @@ async function handleMention(
     // 禁用工具，避免文档评论中的提示注入借机触发远程副作用。
     allowedTools: [],
     persistSession: false,
-    env: buildAgentEnv(cfg.agent_env_allowlist, envOverrides),
+    env: buildAgentEnv(envOverrides),
   };
 
   let answer = '';

@@ -12,6 +12,7 @@ Project documentation, design notes, and comparison analyses.
 | File | Description |
 |------|-------------|
 | `comparison-openclaw.md` | Feature comparison between ChatCC and OpenClaw (alternative Claude Code chat interface) |
+| `operations.md` | Global CLI installation, daemon restart, status, and troubleshooting runbook |
 
 ## For AI Agents
 

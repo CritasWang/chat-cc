@@ -102,6 +102,23 @@ chat-cc version                 # 版本信息
 | `~/.chat-cc/` | 配置根目录 | `CHAT_CC_HOME` |
 | `~/.chat-cc/config.yaml` | 主配置文件 | `CHAT_CC_CONFIG` |
 
+### 安装更新与重启
+
+守护进程的启动、停止、重启和状态查询统一通过全局 CLI 完成。对本仓库进行操作的人工或 AI Agent 都不应使用 `node dist/cli/index.js start`、`npm start` 或手工 `kill` 代替：
+
+```bash
+# 从源码更新全局安装
+npm run build
+npm install -g .
+
+# 让正在运行的 daemon 加载新版本
+chat-cc restart
+chat-cc status
+chat-cc logs -n 50
+```
+
+完整运维和故障排查流程见 [docs/operations.md](docs/operations.md)。
+
 ---
 
 ## 飞书机器人命令
@@ -161,10 +178,7 @@ default_cwd: "."
 projects:                        # 别名 → 路径，/ask @myapp 即切换到对应目录
   myapp: /path/to/project
 allowed_cwd_roots: []            # 额外允许的 cwd 根；会做 realpath 校验，阻止 symlink/.. 越界
-agent_env_allowlist:             # 仅这些环境变量会传给 Agent 子进程
-  - PATH
-  - HOME
-  - ANTHROPIC_API_KEY
+# Agent 子进程继承 daemon 的完整环境；请不要在 daemon 环境中放入无关凭据
 
 # Claude 工具控制
 claude_allowed_tools: ["Read", "Glob", "Grep"]
@@ -192,6 +206,12 @@ notify_chat_id: ""               # 默认通知群
 
 log_level: "info"
 ```
+
+### 升级配置检查
+
+- `admin_users` 默认 fail-closed；空数组意味着无人可执行 `/danger`、`/reload`、全局 profile 等特权操作。升级前应配置明确的管理员 `open_id`。
+- 配置使用严格 schema，未知键会导致启动失败，以防拼写错误静默生效。已移除的 `claude_bin`、`hook_port`、`agent_env_allowlist` 会作为明确的历史键兼容忽略；升级或回滚前仍应先用 `chat-cc doctor` 检查配置。
+- `agent_env_allowlist` 已移除，可直接从旧配置删除；Claude/Codex 子进程现在继承 daemon 的完整环境。
 
 ---
 

@@ -5,33 +5,6 @@ import { z } from 'zod';
 import { configPath as defaultConfigPath, sessionsDir } from './paths.js';
 import { loadRuntimeOverrides } from './engine/runtime-overrides.js';
 
-export const DEFAULT_AGENT_ENV_ALLOWLIST = [
-  'PATH',
-  'HOME',
-  'USER',
-  'LOGNAME',
-  'SHELL',
-  'TMPDIR',
-  'TMP',
-  'TEMP',
-  'LANG',
-  'LC_ALL',
-  'LC_CTYPE',
-  'TERM',
-  'COLORTERM',
-  'NO_PROXY',
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'ALL_PROXY',
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'ANTHROPIC_BASE_URL',
-  'OPENAI_API_KEY',
-  'OPENAI_BASE_URL',
-  'CODEX_HOME',
-  'CLAUDE_CONFIG_DIR',
-] as const;
-
 const ConfigSchema = z.object({
   app_id: z.string().default(''),
   app_secret: z.string().default(''),
@@ -47,8 +20,6 @@ const ConfigSchema = z.object({
   projects: z.record(z.string(), z.string()).default({}),
   /** 允许作为会话 cwd 的附加根目录；default_cwd 与 projects 会自动纳入。 */
   allowed_cwd_roots: z.array(z.string()).default([]),
-  /** 传给 Claude/Codex 子进程的环境变量白名单。 */
-  agent_env_allowlist: z.array(z.string()).default([...DEFAULT_AGENT_ENV_ALLOWLIST]),
 
   claude_allowed_tools: z.array(z.string()).default(['Read', 'Glob', 'Grep']),
   claude_danger_mode: z.boolean().default(false),
@@ -114,6 +85,13 @@ const ConfigSchema = z.object({
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 }).strict();
 
+/** 已从 v3/v4 移除、但读取旧部署配置时应无害忽略的字段。 */
+const LEGACY_IGNORED_CONFIG_KEYS = [
+  'agent_env_allowlist',
+  'claude_bin',
+  'hook_port',
+] as const;
+
 export type Config = z.infer<typeof ConfigSchema>;
 export const CONFIG_KEYS = new Set(Object.keys(ConfigSchema.shape));
 
@@ -175,7 +153,16 @@ export function loadConfig(path?: string): ConfigLoadResult {
 
 /** 只做 schema/正则校验，不读取文件、环境变量或运行时覆盖。 */
 export function parseConfig(raw: unknown): Config {
-  const cfg = ConfigSchema.parse(raw);
+  // 已知历史键兼容性忽略；其他未知键仍由 strict schema 拒绝，避免拼写错误静默生效。
+  const normalized =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (() => {
+          const copy = { ...(raw as Record<string, unknown>) };
+          for (const key of LEGACY_IGNORED_CONFIG_KEYS) delete copy[key];
+          return copy;
+        })()
+      : raw;
+  const cfg = ConfigSchema.parse(normalized);
   for (const pattern of cfg.auto_approve_tools) {
     try {
       new RegExp(pattern);
