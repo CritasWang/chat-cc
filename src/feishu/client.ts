@@ -57,6 +57,8 @@ export interface WsController {
   getState(): 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed';
   /** 销毁当前连接并重建（keepalive 判定 WS 卡死时调用） */
   forceReconnect(): Promise<void>;
+  /** 停止接收新事件（daemon shutdown）。 */
+  close(): void;
 }
 
 export function startWsController(
@@ -65,6 +67,7 @@ export function startWsController(
   ext: DispatcherExtensions = {},
 ): WsController {
   let ws = buildWsClient(cfg);
+  let closed = false;
   startDispatcher(ws, cfg, router, ext);
 
   return {
@@ -72,6 +75,7 @@ export function startWsController(
       return ws.getConnectionStatus().state;
     },
     async forceReconnect() {
+      if (closed) return;
       try {
         ws.close({ force: true });
       } catch (err) {
@@ -79,6 +83,15 @@ export function startWsController(
       }
       ws = buildWsClient(cfg);
       startDispatcher(ws, cfg, router, ext);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      try {
+        ws.close({ force: true });
+      } catch (err) {
+        log().warn({ err }, '关闭 WSClient 失败');
+      }
     },
   };
 }
@@ -95,6 +108,10 @@ export interface DispatcherExtensions {
   onUserMessage?: (meta: MessageMeta) => void;
   /** 图片/文件消息 → 下载落盘 → 返回投递给会话的 prompt 文本，见 media.ts */
   mediaResolver?: (messageId: string, msgType: string, rawContent: string) => Promise<string | undefined>;
+  /** 持久化 message_id 去重，防 WS 重投重复执行副作用。 */
+  messageReceipts?: { accept(messageId: string): boolean; revoke(messageId: string): void };
+  /** 异步业务处理失败后的用户可见兜底。 */
+  onMessageError?: (meta: MessageMeta, err: unknown) => Promise<void>;
 }
 
 export function startDispatcher(
@@ -112,8 +129,7 @@ export function startDispatcher(
       if (msg?.message_id && msg.message_type === 'merge_forward' && ext.forwardResolver) {
         const senderId = data.sender?.sender_id?.open_id ?? '';
         if (!isAllowed(cfg, senderId, msg.chat_id ?? '')) return;
-        const transcript = await ext.forwardResolver(msg.message_id);
-        if (!transcript) return;
+        if (!acceptMessage(msg.message_id, ext)) return;
         const meta: MessageMeta = {
           messageId: msg.message_id,
           chatId: msg.chat_id ?? '',
@@ -122,11 +138,15 @@ export function startDispatcher(
           mentionBot: false,
           ...(msg.thread_id ? { threadId: msg.thread_id } : {}),
         };
-        const text = `以下是我转发的聊天记录，请阅读并处理：\n\n${transcript}`;
-        log().info({ sender: senderId, chat: meta.chatId, items: transcript.split('\n').length }, '收到合并转发消息');
         ext.onUserMessage?.(meta);
-        void router.dispatch(text, meta).catch((err) => {
-          log().error({ err }, 'merge_forward dispatch 失败');
+        void runMessageJob(meta, ext, 'merge_forward dispatch', async (markDispatched) => {
+          await resolveThreadId(meta, ext);
+          const transcript = await ext.forwardResolver!(msg.message_id!);
+          if (!transcript) throw new Error('合并转发消息无可用内容');
+          const text = `以下是我转发的聊天记录，请阅读并处理：\n\n${transcript}`;
+          log().info({ sender: senderId, chat: meta.chatId, items: transcript.split('\n').length }, '收到合并转发消息');
+          markDispatched();
+          await router.dispatch(text, meta);
         });
         return;
       }
@@ -141,6 +161,7 @@ export function startDispatcher(
         const senderId = data.sender?.sender_id?.open_id ?? '';
         const chatId = msg.chat_id ?? '';
         if (!isAllowed(cfg, senderId, chatId)) return;
+        if (!acceptMessage(msg.message_id, ext)) return;
         const meta: MessageMeta = {
           messageId: msg.message_id,
           chatId,
@@ -153,12 +174,12 @@ export function startDispatcher(
         ext.onUserMessage?.(meta);
         // 下载可达 100MB，不能阻塞 WS 事件 ack（否则飞书判超时重推）——异步处理
         const mediaMsg = msg;
-        void (async () => {
+        void runMessageJob(meta, ext, 'media dispatch', async (markDispatched) => {
+          await resolveThreadId(meta, ext);
           const prompt = await ext.mediaResolver!(mediaMsg.message_id!, mediaMsg.message_type!, mediaMsg.content ?? '');
-          if (!prompt) return; // 下载失败已在 media.ts 记日志
+          if (!prompt) throw new Error('消息资源下载失败或内容无效');
+          markDispatched();
           await router.dispatch(prompt, meta);
-        })().catch((err) => {
-          log().error({ err }, 'media dispatch 失败');
         });
         return;
       }
@@ -173,12 +194,6 @@ export function startDispatcher(
       const meta = extractMeta(data);
       if (!meta) return;
 
-      // 话题群消息但事件缺 thread_id（常见于启动话题的第一条消息）→ 补查
-      if (!meta.threadId && meta.chatType === 'group' && ext.threadResolver) {
-        const tid = await ext.threadResolver.resolve(meta.chatId, meta.messageId);
-        if (tid) meta.threadId = tid;
-      }
-
       if (!isAllowed(cfg, meta.senderId, meta.chatId)) {
         log().warn({ sender: meta.senderId, chat: meta.chatId }, '拒绝未授权消息');
         return;
@@ -186,12 +201,18 @@ export function startDispatcher(
 
       const text = extractText(data, meta);
       if (!text) return;
+      if (!acceptMessage(meta.messageId, ext)) return;
 
-      log().info({ sender: meta.senderId, chat: meta.chatId, text }, '收到消息');
+      log().info(
+        { sender: meta.senderId, chat: meta.chatId, textPreview: text.slice(0, 200), textLength: text.length },
+        '收到消息',
+      );
       ext.onUserMessage?.(meta);
 
-      void router.dispatch(text, meta).catch((err) => {
-        log().error({ err }, 'dispatch 失败');
+      void runMessageJob(meta, ext, 'dispatch', async (markDispatched) => {
+        await resolveThreadId(meta, ext);
+        markDispatched();
+        await router.dispatch(text, meta);
       });
     },
   };
@@ -201,13 +222,55 @@ export function startDispatcher(
   }
   if (ext.commentHandler) {
     handlers['drive.notice.comment_add_v1'] = async (raw: unknown) => {
-      await ext.commentHandler!(raw);
+      // 评论 Agent 可运行数十分钟，不能占住 WS 事件回执；处理器内部已有
+      // per-thread inFlight 去重与 try/finally 清理，这里只负责后台启动和最后一层异常收敛。
+      void ext.commentHandler!(raw).catch((err) =>
+        log().error({ err }, '评论事件后台处理失败'),
+      );
     };
   }
 
   const dispatcher = new Lark.EventDispatcher({}).register(handlers);
   ws.start({ eventDispatcher: dispatcher });
   log().info({ events: Object.keys(handlers) }, '飞书 WSClient 已启动');
+}
+
+async function resolveThreadId(meta: MessageMeta, ext: DispatcherExtensions): Promise<void> {
+  // 文本、媒体、合并转发统一补查；否则话题首条图片/文件会逃逸到个人 active 会话。
+  if (meta.threadId || meta.chatType !== 'group' || !ext.threadResolver) return;
+  const tid = await ext.threadResolver.resolve(meta.chatId, meta.messageId);
+  if (tid) meta.threadId = tid;
+}
+
+function acceptMessage(messageId: string, ext: DispatcherExtensions): boolean {
+  if (!ext.messageReceipts || ext.messageReceipts.accept(messageId)) return true;
+  log().info({ messageId }, '收到重复消息，已按 message_id 去重');
+  return false;
+}
+
+/** @internal 导出用于验证 receipt 的副作用边界。 */
+export async function runMessageJob(
+  meta: MessageMeta,
+  ext: DispatcherExtensions,
+  label: string,
+  job: (markDispatched: () => void) => Promise<void>,
+): Promise<void> {
+  let dispatched = false;
+  try {
+    await job(() => {
+      // 从这一刻起 Router/命令可能已经产生外部副作用；后续失败仍保持 at-most-once，
+      // 不能撤销 receipt 后让 WS 重投重复执行 /new chat、/reload 等命令。
+      dispatched = true;
+    });
+  } catch (err) {
+    if (!dispatched) ext.messageReceipts?.revoke(meta.messageId);
+    log().error({ err, messageId: meta.messageId }, `${label} 失败`);
+    if (ext.onMessageError) {
+      await ext.onMessageError(meta, err).catch((notifyErr) =>
+        log().error({ err: notifyErr, messageId: meta.messageId }, '处理失败通知发送失败'),
+      );
+    }
+  }
 }
 
 function extractMeta(data: ReceiveMessageEvent): MessageMeta | undefined {

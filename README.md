@@ -19,7 +19,7 @@
 - **会话磁盘持久化** — 原子写（fsync + rename），重启后自动 resume，cost 延续
 - **内置守护进程** — fork + PID 文件 + 信号处理，`chat-cc start/stop/restart/status`
 - **空闲自动回收** — 30 分钟无活动自动 disconnect，保留磁盘 meta，下次自动 resume
-- **安全控制** — 用户/群聊白名单 + `admin_users` 敏感命令收敛 + 卡片回调防重放（双击去重 / 一次性 nonce）
+- **安全控制** — 默认拒绝访问（需显式白名单或 `allow_all_users`）+ `admin_users` 敏感命令收敛 + cwd 根目录约束 + 入站消息持久化去重
 
 ## 前置条件
 
@@ -115,17 +115,17 @@ chat-cc version                 # 版本信息
 | `/session start [@别名\|path] [--codex\|--claude]` | 启动长驻会话（可按会话选引擎；同群同用户可开多个 slot） |
 | `/session switch <slot\|序号>` | 切换活跃会话，其他会话后台保持 |
 | `/session list` / `current` / `stop` | 会话列表 / 当前会话 / 关闭会话 |
-| `/new chat [名字] [@别名] [--topic] [--codex\|--claude] [--profile <name>]` | 自动建新群并开好会话（`@别名` 指定项目；`--topic` 建话题群，一个话题一个独立会话）；自动打会话标签 `AI`+`Claude` / `AI`+`Codex`（`new_chat_tags_*` 可配，需 lark-cli 用户授权） |
+| `/new chat [名字] [@别名] [--topic] [--codex\|--claude] [--profile <name>]` | 管理员创建新群并开好会话（`@别名` 指定项目；`--topic` 建话题群，一个话题一个独立会话） |
 | `/s <消息>` | 向当前活跃会话发送（非命令文本也自动走这里；话题群里自动按话题路由） |
 | `/stop` | 精确中断当前活跃会话 |
 | `/cd <@别名\|路径>` | 当前会话切换工作目录（新目录开新对话，引擎/profile 等设置保留） |
 | `/clear`（`/reset`） | 清空当前会话上下文原地重开（cwd 与引擎/profile/权限设置保留；话题群里作用于当前话题） |
 | `/profile use <name> [--global]` | 当前会话切 API profile；`--global` 切全局默认（可选，读 `~/.claude/cc-profiles.zsh`） |
-| `/profile [list\|clear\|reload]` | 查看两层状态 / 会话回归全局 / 重读数据源 |
+| `/profile [list\|clear\|reload]` | 管理员查看/切换 API profile、回归全局或重读数据源 |
 | `/usage` | Token/Cost 看板（按会话 + 全局聚合） |
 | `/project` | 项目别名管理 |
 | `/danger on\|off [--global]` | 当前会话切权限模式；`--global` 切全局默认；`clear` 回归全局 ※ admin_users 可收敛 |
-| `/reload` | 热重载配置 ※ admin_users 可收敛 |
+| `/reload` | 校验配置并完整重启后台 daemon ※ 仅 `admin_users` |
 
 其他玩法：
 - **话题群**：把群转成话题群后，每个话题就是一个独立会话，互不串上下文
@@ -143,10 +143,11 @@ chat-cc version                 # 版本信息
 app_id: ""
 app_secret: ""
 
-# 安全白名单（留空表示不限制）
+# 安全白名单（默认 fail-closed）
+allow_all_users: false           # 只有明确需要公开机器人时才设 true
 allowed_users: []
 allowed_chats: []
-# 管理员（可执行 /danger /reload /profile use；留空 = 不额外设限）
+# 管理员（可执行 /danger /reload /profile use；留空 = 无人有特权）
 admin_users: []
 
 # 会话引擎：claude（默认）或 codex；也可在 /session start、/new chat 时用 --codex/--claude 按会话指定
@@ -159,6 +160,11 @@ codex_model: ""                  # 留空用 Codex 默认
 default_cwd: "."
 projects:                        # 别名 → 路径，/ask @myapp 即切换到对应目录
   myapp: /path/to/project
+allowed_cwd_roots: []            # 额外允许的 cwd 根；会做 realpath 校验，阻止 symlink/.. 越界
+agent_env_allowlist:             # 仅这些环境变量会传给 Agent 子进程
+  - PATH
+  - HOME
+  - ANTHROPIC_API_KEY
 
 # Claude 工具控制
 claude_allowed_tools: ["Read", "Glob", "Grep"]
@@ -166,10 +172,15 @@ claude_danger_mode: false        # true 时绕过 canUseTool 审批（codex 引�
 auto_approve_tools:              # canUseTool 层白名单（正则匹配工具名）
   - "^(Read|Glob|Grep|LS|WebFetch|WebSearch|TodoWrite)$"
 approval_timeout_ms: 120000      # 审批卡片超时后默认 deny
+max_concurrent_asks: 20          # /ask 全局并发上限
+max_concurrent_asks_per_user: 2  # 单个 chat+用户的 /ask 并发上限
+max_active_sessions: 20          # 同时驻留的会话/query 上限，防批量话题耗尽进程资源
 
 # 实况卡片
 stream_throttle_ms: 500          # 卡片 PATCH 节流间隔（毫秒）
 message_debounce_ms: 600         # 消息静默窗口：窗口内连续消息合并为一条 prompt；0 关闭合批窗口
+max_pending_messages_per_session: 100
+max_pending_chars_per_session: 100000
 
 # 会话管理
 idle_timeout_minutes: 30         # 空闲超时自动 disconnect（保留磁盘 meta）

@@ -1,5 +1,6 @@
-import { mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { join, extname, basename } from 'node:path';
+import { createHash } from 'node:crypto';
 import type * as Lark from '@larksuiteoapi/node-sdk';
 import { mediaDir } from '../paths.js';
 import { log } from '../logger.js';
@@ -8,7 +9,7 @@ import { log } from '../logger.js';
  * 用户消息资源（图片/文件）下载 — 让会话能"看到"用户发的图和文件。
  *
  * 飞书 im.v1.messageResource.get 支持下载消息中的 image/file 资源（≤100MB）。
- * 落盘到 ~/.chat-cc/media/<messageId>/，把绝对路径写进 prompt 交给会话：
+ * 落盘到 ~/.chat-cc/media/<sha256(messageId)>/，把绝对路径写进 prompt 交给会话：
  * Claude 的 Read 工具原生读图，Codex 沙箱对全盘可读。
  * 不落到项目 cwd：避免污染 git 工作区，且同群多会话时无法确定目标项目。
  */
@@ -61,15 +62,18 @@ export async function fetchMessageMedia(
 ): Promise<MediaResult | undefined> {
   const spec = resolveResourceSpec(msgType, rawContent);
   if (!spec) return undefined;
-  const dir = join(mediaDir(), messageId);
+  // messageId 来自远端事件，不能直接作为路径段；固定长度 hash 同时规避路径穿越与超长文件名。
+  const dir = join(mediaDir(), createHash('sha256').update(messageId).digest('hex'));
   const filePath = join(dir, spec.name);
   try {
-    await mkdir(dir, { recursive: true });
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await chmod(dir, 0o700).catch(() => {});
     const resp = await client.im.v1.messageResource.get({
       params: { type: spec.type },
       path: { message_id: messageId, file_key: spec.key },
     });
     await resp.writeFile(filePath);
+    await chmod(filePath, 0o600).catch(() => {});
   } catch (err) {
     log().warn({ err, messageId, msgType, key: spec.key }, '消息资源下载失败');
     return undefined;
@@ -88,7 +92,7 @@ export function mediaPrompt(media: MediaResult): string {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * 清理超过保留期的媒体目录（media/<messageId>/ 按目录 mtime 判定）。
+ * 清理超过保留期的媒体目录（media/<messageId hash>/ 按目录 mtime 判定）。
  * 幂等且容错：单个目录失败只记日志，不影响其余清理。
  * @returns 删除的目录数
  */

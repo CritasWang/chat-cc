@@ -4,6 +4,7 @@ import type { Config } from '../config.js';
 import { isAllowed } from '../auth.js';
 import { translateSdkMessage } from '../engine/events.js';
 import { log } from '../logger.js';
+import { buildAgentEnv } from '../agent/env.js';
 
 /**
  * 云文档划词评论集成（借鉴 lark-bridge bot/comments.ts）。
@@ -64,6 +65,13 @@ export function buildCommentHandler(deps: CommentHandlerDeps): (raw: unknown) =>
       log().info({ scope }, '该评论线程已有 agent 在跑，忽略重复触发');
       return;
     }
+    if (inFlight.size >= deps.cfg.max_concurrent_comment_queries) {
+      log().warn(
+        { scope, limit: deps.cfg.max_concurrent_comment_queries },
+        '评论 agent 全局并发已满，忽略本次触发',
+      );
+      return;
+    }
     inFlight.add(scope);
     try {
       await handleMention(deps, {
@@ -112,34 +120,45 @@ async function handleMention(
   const envOverrides = deps.apiProfiles?.envOverrides() ?? {};
   const options: Options = {
     cwd: cfg.default_cwd,
-    allowedTools: cfg.claude_allowed_tools,
+    // 评论回答所需上下文已完整放入 prompt，不需要访问本地文件或执行工具。
+    // 禁用工具，避免文档评论中的提示注入借机触发远程副作用。
+    allowedTools: [],
     persistSession: false,
-    ...(Object.keys(envOverrides).length > 0
-      ? { env: { ...(process.env as Record<string, string>), ...envOverrides } }
-      : {}),
+    env: buildAgentEnv(cfg.agent_env_allowlist, envOverrides),
   };
 
   let answer = '';
   const abortController = new AbortController();
-  const deadline = Date.now() + cfg.claude_ask_timeout_min * 60_000;
-  const timer = setTimeout(() => abortController.abort(), cfg.claude_ask_timeout_min * 60_000);
-  timer.unref();
   const q = query({ prompt, options: { ...options, abortController } });
+  const timeoutMs = cfg.claude_ask_timeout_min * 60_000;
+  let timedOut = false;
+  let timer: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+      void q.interrupt().catch(() => {});
+      reject(new Error(`COMMENT_TIMEOUT:${timeoutMs}`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
   try {
-    for await (const msg of q) {
-      // deadline 保留做双重保险——abortController 会触发 query 中断，
-      // 但 for-await 在某些 SDK 边界情况下可能不立即响应 abort
-      if (Date.now() > deadline) {
-        await q.interrupt();
-        break;
-      }
+    const iterator = q[Symbol.asyncIterator]();
+    while (true) {
+      const next = await Promise.race([iterator.next(), timeoutPromise]);
+      if (next.done) break;
+      const msg = next.value;
       for (const ev of translateSdkMessage(msg)) {
         if (ev.kind === 'assistant-text') answer += ev.text;
         if (ev.kind === 'result' && !answer.trim() && ev.text) answer = ev.text;
       }
     }
+  } catch (err) {
+    if (!timedOut) throw err;
+    log().warn({ fileToken: ctx.fileToken, commentId: ctx.commentId, timeoutMs }, '评论 agent 超时，使用已有输出收尾');
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
+    q.close();
   }
   answer = answer.trim().slice(0, REPLY_MAX);
   if (!answer) {
@@ -157,7 +176,7 @@ async function handleMention(
     });
     log().info({ fileToken: ctx.fileToken, commentId: ctx.commentId }, '评论回复已发送');
   } catch (err) {
-    if (ctx.fileType === 'doc' || ctx.fileType === 'docx') {
+    if ((ctx.fileType === 'doc' || ctx.fileType === 'docx') && larkErrorCode(err) === 1069302) {
       log().warn({ err }, '评论 reply 失败，降级为新建全局评论');
       await client.drive.v1.fileComment.create({
         params: { file_type: ctx.fileType, user_id_type: 'open_id' },
@@ -172,6 +191,22 @@ async function handleMention(
       throw err;
     }
   }
+}
+
+function larkErrorCode(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const rec = err as Record<string, unknown>;
+  const candidates = [
+    rec['code'],
+    (rec['response'] as Record<string, unknown> | undefined)?.['code'],
+    ((rec['response'] as Record<string, unknown> | undefined)?.['data'] as Record<string, unknown> | undefined)?.['code'],
+    (rec['data'] as Record<string, unknown> | undefined)?.['code'],
+  ];
+  for (const value of candidates) {
+    const code = Number(value);
+    if (Number.isInteger(code) && code > 0) return code;
+  }
+  return undefined;
 }
 
 function extractEvent(raw: unknown): CommentAddEvent {

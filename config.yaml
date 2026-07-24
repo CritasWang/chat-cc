@@ -1,74 +1,49 @@
-# 飞书机器人配置
-# 也可以通过环境变量 FEISHU_APP_ID / FEISHU_APP_SECRET 设置
+# chat-cc 示例配置（复制到 ~/.chat-cc/config.yaml 后填写）
 
 app_id: ""
 app_secret: ""
 
-# 安全控制（留空则允许所有人）
-allowed_users: []    # 允许的用户 open_id 列表
-allowed_chats: []    # 允许的群聊 chat_id 列表
+# 默认 fail-closed。仅在明确需要公开机器人时设置 true。
+allow_all_users: false
+allowed_users: []
+allowed_chats: []
+admin_users: []
 
-# Claude Code 配置
-claude_bin: "claude"                         # claude 可执行文件路径
-default_cwd: "/Volumes/data/sources"         # 默认工作目录
-claude_danger_mode: false                    # 是否跳过所有权限检查
+default_cwd: "."
+projects: {}
+allowed_cwd_roots: []
 
-# Claude Code 超时配置（分钟）
-claude_ask_timeout: 50                       # /ask 命令超时时间（默认 50 分钟）
-claude_session_timeout: 50                   # /session 会话响应超时（默认 50 分钟）
+agent: "claude"
+codex_bin: "codex"
+codex_sandbox: "workspace-write"
+codex_model: ""
 
-# 消息分块配置
-max_chunk_size: 3500                         # 长消息分块大小（默认 3500 字符）
-
-# claude -p 模式下允许的工具（非 danger 模式时生效）
+claude_danger_mode: false
 claude_allowed_tools:
   - "Read"
   - "Glob"
   - "Grep"
-  - "Bash(git status)"
-  - "Bash(git log)"
-  - "Bash(git diff)"
 
-# 项目别名映射（使用 @别名 快捷访问）
-projects:
-  server: "/Volumes/data/sources/server_migration"
-  devops: "/Volumes/data/sources/devops"
-  # myproject: "/path/to/myproject"
+claude_ask_timeout_min: 50
+claude_session_timeout_min: 50
+max_concurrent_asks: 20
+max_concurrent_asks_per_user: 2
+max_concurrent_comment_queries: 10
+max_active_sessions: 20
+max_chunk_size: 3500
+message_debounce_ms: 600
+max_pending_messages_per_session: 100
+max_pending_chars_per_session: 100000
+stream_throttle_ms: 500
 
-# Shell 白名单（/shell 命令只能执行这些前缀的命令）
-shell_whitelist:
-  - "docker ps"
-  - "docker stats"
-  - "git status"
-  - "git log"
-  - "systemctl status"
-  - "df -h"
-  - "free -h"
-  - "uptime"
-  - "nvidia-smi"
-
-# Hook 服务端口（供 Claude Code hooks 回调）
-hook_port: 9876
-
-# 默认通知目标（Claude Code hooks 不指定 chat_id 时发送到此聊天）
 notify_chat_id: ""
-
-# 完成通知安静阈值（分钟）：turn 完成时仅当源群距用户上次发消息超过此时长才推送
-# （前台快速对话不打扰；通知群自身的 turn 永不推送）；0 = 总是推送
 notify_quiet_minutes: 2
-
-# 后台会话完成时在源群补发一条轻量提示（true/false）
-# 流式卡片是原地更新（PATCH），不产生未读红点；补发的新消息才会让群聊亮红点
 notify_done_ping: true
 
-# 定时状态推送
-status_push_interval: 180            # 推送间隔（分钟），0 则禁用（默认 180，即 3 小时）
-status_push_chat_id: ""              # 推送目标群聊，为空则用 notify_chat_id
+idle_timeout_minutes: 30
+idle_check_seconds: 60
+approval_timeout_ms: 120000
+mcp_feishu_rate_limit_ms: 10000
+media_retention_days: 7
 
-# 会话中间输出流式推送（在 /session 模式下，定期将 Claude Code 输出同步到聊天）
-stream_enabled: true                         # 是否启用中间输出推送（默认 true）
-stream_interval: 5                           # 推送间隔秒数（默认 5 秒）
-stream_min_delta: 50                         # 最少新增字符数才触发推送（默认 50）
-
-# 日志级别: debug, info, warn, error
 log_level: "info"

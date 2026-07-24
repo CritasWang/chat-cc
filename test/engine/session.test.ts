@@ -41,6 +41,12 @@ beforeEach(() => {
 });
 
 describe('Session resume 失效自愈', () => {
+  it('close 后 send 明确抛错而不是静默吞消息', async () => {
+    const sess = new Session({ threadKey: 'c:u:closed', cwd: '/tmp' });
+    await sess.close();
+    expect(() => sess.send('lost')).toThrow(/closed/);
+  });
+
   it('stale-resume 时降级为无 resume 新会话并重放消息', async () => {
     const events: any[] = [];
     const notices: any[] = [];
@@ -121,6 +127,36 @@ describe('Session resume 失效自愈', () => {
     );
     expect(hoisted.calls.length).toBe(1);
     expect(hoisted.calls[0]!.options.resume).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events.some((e) => e.kind === 'error')).toBe(false);
+    await sess.close();
+  });
+
+  it('自愈通知回调抛错不会打断新 query 与消息重放', async () => {
+    const events: any[] = [];
+    hoisted.responders.push(async function* () {
+      yield staleResult();
+    });
+    hoisted.responders.push(async function* (prompt) {
+      const first = await prompt[Symbol.asyncIterator]().next();
+      expect((first.value as any)?.message?.content).toBe('hello');
+      yield { type: 'system', subtype: 'init', session_id: 'fresh-after-notice-error' };
+      yield { type: 'result', is_error: false, result: 'ok', duration_ms: 1, num_turns: 1 };
+    });
+
+    const sess = new Session({
+      threadKey: 'c:u:default',
+      cwd: '/tmp',
+      resumeId: 'stale-uuid',
+      onEvent: (e) => { events.push(e); },
+      onNotice: () => { throw new Error('notice failed'); },
+    });
+    sess.send('hello');
+
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.kind === 'result' && e.ok)).toBe(true);
+    });
+    expect(sess.sessionId).toBe('fresh-after-notice-error');
     await sess.close();
   });
 });

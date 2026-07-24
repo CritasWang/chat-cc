@@ -49,7 +49,7 @@ export function renderHelpCard(): InteractiveCard {
       '**🛠 管理**\n' +
         '`/status`  系统状态  ·  `/project`  项目别名\n' +
         '`/danger on|off`  当前会话切权限模式 · 加 `--global` 切全局\n' +
-        '`/reload`  热重载配置\n' +
+        '`/reload`  校验配置并重启后台 daemon\n' +
         '`/profile use <name>`  当前会话切 API 配置 · 加 `--global` 切全局默认\n' +
         '`/usage`  Token/Cost 看板  ·  `/ping`  健康检查\n' +
         '`/help --pin`  把本卡片置顶到群（当命令面板用）',

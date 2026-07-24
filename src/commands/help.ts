@@ -1,5 +1,6 @@
 import type { CommandFn } from './types.js';
 import { renderHelpCard } from '../feishu/cards/help.js';
+import { replyOptions } from '../feishu/router.js';
 
 /**
  * /help [--pin] — 命令手册卡片（含常用操作按钮，兼作命令面板）。
@@ -8,7 +9,7 @@ import { renderHelpCard } from '../feishu/cards/help.js';
 export const helpCommand: CommandFn = async (args, meta, { replier }) => {
   const wantPin = /(^|\s)--pin(\s|$)/.test(args) || args.trim() === 'pin';
   if (!wantPin) {
-    await replier.replyCard(meta.messageId, renderHelpCard());
+    await replier.replyCard(meta.messageId, renderHelpCard(), replyOptions(meta));
     return;
   }
   const mid = await replier.sendCard(meta.chatId, renderHelpCard());

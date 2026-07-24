@@ -23,6 +23,8 @@ export interface UsageSnapshot {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** SDK 对该轮给出的真实美元成本；Codex/旧数据可能缺失。 */
+  costUsd?: number;
   model?: string;
 }
 
@@ -103,12 +105,13 @@ export function translateSdkMessage(msg: SDKMessage): EngineEvent[] {
       ok: !m.is_error,
       text,
       durationMs: m.duration_ms ?? 0,
-      usage: m.usage
+      usage: m.usage || typeof m.total_cost_usd === 'number'
         ? {
-            inputTokens: m.usage.input_tokens ?? 0,
-            outputTokens: m.usage.output_tokens ?? 0,
-            cacheReadTokens: m.usage.cache_read_input_tokens ?? 0,
-            cacheCreationTokens: m.usage.cache_creation_input_tokens ?? 0,
+            inputTokens: m.usage?.input_tokens ?? 0,
+            outputTokens: m.usage?.output_tokens ?? 0,
+            cacheReadTokens: m.usage?.cache_read_input_tokens ?? 0,
+            cacheCreationTokens: m.usage?.cache_creation_input_tokens ?? 0,
+            ...(typeof m.total_cost_usd === 'number' ? { costUsd: m.total_cost_usd } : {}),
           }
         : undefined,
       detail: {

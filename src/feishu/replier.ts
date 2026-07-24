@@ -1,4 +1,5 @@
 import type * as Lark from '@larksuiteoapi/node-sdk';
+import { randomUUID } from 'node:crypto';
 import { log } from '../logger.js';
 
 export interface InteractiveCard {
@@ -21,7 +22,7 @@ export interface InteractiveCard {
 function isTransientNetworkError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   // 也检查错误对象的 HTTP status（如有）
-  const status = (err as Record<string, unknown> | undefined)?.status;
+  const status = httpStatus(err);
   return (
     msg.includes('ECONN') ||
     msg.includes('EOF') ||
@@ -32,7 +33,10 @@ function isTransientNetworkError(err: unknown): boolean {
     msg.includes('socket disconnected') ||
     msg.includes('TLS connection') ||
     msg.includes('tenant_access_token') ||
-    Number(status) === 429 ||
+    status === 408 ||
+    status === 425 ||
+    status === 429 ||
+    (status !== undefined && status >= 500 && status <= 599) ||
     msg.includes('rate limit') ||
     msg.includes('Too Many Requests')
   );
@@ -45,24 +49,35 @@ export class Replier {
     rootMessageId: string,
     text: string,
     opts: { inThread?: boolean } = {},
+    retries = 2,
   ): Promise<string | undefined> {
-    try {
-      const resp = await this.client.im.v1.message.reply({
-        path: { message_id: rootMessageId },
-        data: {
-          msg_type: 'text',
-          content: JSON.stringify({ text }),
-          ...(opts.inThread ? { reply_in_thread: true } : {}),
-        },
-      });
-      return resp.data?.message_id;
-    } catch (err) {
-      log().error({ err, rootMessageId }, '回复文本失败');
-      return undefined;
+    const uuid = randomUUID();
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const resp = await this.client.im.v1.message.reply({
+          path: { message_id: rootMessageId },
+          data: {
+            msg_type: 'text',
+            content: JSON.stringify({ text }),
+            uuid,
+            ...(opts.inThread ? { reply_in_thread: true } : {}),
+          },
+        });
+        return resp.data?.message_id;
+      } catch (err) {
+        if (attempt < retries && isTransientNetworkError(err)) {
+          await delay(300 * 2 ** attempt);
+          continue;
+        }
+        log().error({ err, rootMessageId }, '回复文本失败');
+        return undefined;
+      }
     }
+    return undefined;
   }
 
   async sendText(chatId: string, text: string, retries = 2): Promise<string | undefined> {
+    const uuid = randomUUID();
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const resp = await this.client.im.v1.message.create({
@@ -71,6 +86,7 @@ export class Replier {
             receive_id: chatId,
             msg_type: 'text',
             content: JSON.stringify({ text }),
+            uuid,
           },
         });
         return resp.data?.message_id;
@@ -87,6 +103,7 @@ export class Replier {
   }
 
   async sendCard(chatId: string, card: InteractiveCard, retries = 2): Promise<string | undefined> {
+    const uuid = randomUUID();
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const resp = await this.client.im.v1.message.create({
@@ -95,6 +112,7 @@ export class Replier {
             receive_id: chatId,
             msg_type: 'interactive',
             content: JSON.stringify(card),
+            uuid,
           },
         });
         return resp.data?.message_id;
@@ -116,6 +134,7 @@ export class Replier {
     opts: { inThread?: boolean } = {},
     retries = 2,
   ): Promise<string | undefined> {
+    const uuid = randomUUID();
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const resp = await this.client.im.v1.message.reply({
@@ -123,6 +142,7 @@ export class Replier {
           data: {
             msg_type: 'interactive',
             content: JSON.stringify(card),
+            uuid,
             ...(opts.inThread ? { reply_in_thread: true } : {}),
           },
         });
@@ -229,4 +249,17 @@ export class Replier {
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function httpStatus(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const rec = err as Record<string, unknown>;
+  const direct = Number(rec['status'] ?? rec['statusCode']);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const response = rec['response'];
+  if (response && typeof response === 'object') {
+    const nested = Number((response as Record<string, unknown>)['status']);
+    if (Number.isFinite(nested) && nested > 0) return nested;
+  }
+  return undefined;
 }

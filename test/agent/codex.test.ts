@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { buildCodexArgs } from '../../src/agent/codex-args.js';
 import { CodexJsonlTranslator } from '../../src/agent/codex-jsonl.js';
+import { CodexSession, isStaleCodexResumeError } from '../../src/agent/codex-session.js';
 import type { EngineEvent } from '../../src/engine/events.js';
 import { initLogger } from '../../src/logger.js';
 
@@ -106,5 +107,49 @@ describe('CodexJsonlTranslator', () => {
 
   it('未知事件/非 JSON record 安静忽略', () => {
     expect(run([{ type: 'fancy.new.event' }, null, 42, 'str'])).toEqual([]);
+  });
+});
+
+describe('Codex stale resume 识别', () => {
+  it('识别本地 thread/session 丢失错误', () => {
+    expect(isStaleCodexResumeError('thread not found: 123')).toBe(true);
+    expect(isStaleCodexResumeError('Session not found for thread_id: abc')).toBe(true);
+    expect(isStaleCodexResumeError('Failed to resume session from /tmp/rollout')).toBe(true);
+  });
+
+  it('普通执行错误不误判为 stale resume', () => {
+    expect(isStaleCodexResumeError('command not found: rg')).toBe(false);
+    expect(isStaleCodexResumeError('rate limited')).toBe(false);
+  });
+});
+
+describe('CodexSession 子进程故障', () => {
+  it('close 后 send 明确抛错而不是静默吞消息', async () => {
+    const session = new CodexSession({
+      threadKey: 'oc_x:ou_x:closed',
+      cwd: '/tmp',
+      sandbox: 'workspace-write',
+    });
+    await session.close();
+    expect(() => session.send('lost')).toThrow(/closed/);
+  });
+
+  it('可执行文件不存在时产出终态且 close 不挂死', async () => {
+    const events: EngineEvent[] = [];
+    const session = new CodexSession({
+      threadKey: 'oc_x:ou_x:default',
+      cwd: '/tmp',
+      codexBin: '/definitely/not/a/real/codex-binary',
+      sandbox: 'workspace-write',
+      onEvent: (event) => { events.push(event); },
+    });
+    session.send('hello');
+
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.kind === 'result' || event.kind === 'error')).toBe(true);
+    }, { timeout: 2_000 });
+    const terminal = events.find((event) => event.kind === 'result' || event.kind === 'error');
+    expect(terminal && (terminal.kind === 'result' ? terminal.text : terminal.message)).toMatch(/ENOENT|not\/a\/real/);
+    await expect(session.close(500)).resolves.toBeUndefined();
   });
 });

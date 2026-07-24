@@ -3,7 +3,8 @@ import { saveRuntimeOverride } from '../engine/runtime-overrides.js';
 import { applyFeedTag, removeFeedTag } from '../feishu/feed-tag.js';
 import { isPrivileged } from '../policy/owner.js';
 import { log } from '../logger.js';
-import { senderKey, type CommandFn } from './types.js';
+import { type CommandFn } from './types.js';
+import { currentSessionKey } from './session-context.js';
 
 const DENY_MSG = '⛔ 该命令仅管理员可用（config `admin_users` 可配置管理员）';
 
@@ -24,9 +25,7 @@ export const dangerCommand: CommandFn = async (args, meta, { cfg, pool }) => {
   const tokens = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const isGlobal = tokens.includes('--global');
   const sub = tokens.filter((t) => t !== '--global')[0] ?? '';
-  const userKey = senderKey(meta);
-
-  const activeTk = pool.activeThreadKeyOf(userKey);
+  const activeTk = currentSessionKey(meta, pool);
   const sessionOverride = activeTk ? pool.getMeta(activeTk)?.danger : undefined;
 
   // —— 状态查询 ——
@@ -49,6 +48,7 @@ export const dangerCommand: CommandFn = async (args, meta, { cfg, pool }) => {
     if (!activeTk) return '当前无活跃会话';
     if (sessionOverride === undefined) return '当前会话没有权限模式覆盖（本就跟随全局）';
     const how = await pool.setSessionDanger(activeTk, undefined, cfg.claude_danger_mode);
+    if (how === 'missing') return '❌ 会话在切换期间已被关闭';
     if (cfg.danger_tag && !cfg.claude_danger_mode) {
       void removeFeedTag(cfg.lark_cli_bin, cfg.danger_tag, meta.chatId);
     }
@@ -70,21 +70,23 @@ export const dangerCommand: CommandFn = async (args, meta, { cfg, pool }) => {
     // 带会话级覆盖的不动
     let inplace = 0;
     let restarted = 0;
+    let failed = 0;
     for (const s of pool.list()) {
       if (!s.active) continue;
       if (pool.getMeta(s.threadKey)?.danger !== undefined) continue;
-      const sess = pool.get(s.threadKey);
-      if (sess?.setDanger && (await sess.setDanger(next))) {
-        inplace += 1;
-        continue;
+      try {
+        const how = await pool.setSessionDanger(s.threadKey, undefined, next);
+        if (how === 'inplace') inplace += 1;
+        else if (how === 'restarted') restarted += 1;
+        else if (how === 'missing') failed += 1;
+      } catch (err) {
+        failed += 1;
+        log().warn({ err, threadKey: s.threadKey, dangerMode: next }, '全局 danger 切换时会话更新失败');
       }
-      await pool.stop(s.threadKey, { keepMeta: true });
-      const m = pool.getMeta(s.threadKey);
-      pool.start(parseKey(s.threadKey), m?.cwd ?? '.');
-      restarted += 1;
     }
     const summary =
-      `在线生效 ${inplace} 个${restarted > 0 ? ` · 重启生效 ${restarted} 个（其运行中任务已被中断）` : ''}`;
+      `在线生效 ${inplace} 个${restarted > 0 ? ` · 重启生效 ${restarted} 个（其运行中任务已被中断）` : ''}` +
+      (failed > 0 ? ` · ${failed} 个会话状态已变化，未能当场更新` : '');
     return next
       ? `⚠️ **全局** Danger 模式已开启（跟随全局的会话：${summary}）\n带会话级覆盖的会话不受影响 · \`/danger off --global\` 关闭`
       : `🔒 **全局** Danger 模式已关闭（恢复审批流；跟随全局的会话：${summary}）`;
@@ -97,6 +99,7 @@ export const dangerCommand: CommandFn = async (args, meta, { cfg, pool }) => {
   const effective = sessionOverride ?? cfg.claude_danger_mode;
   const next = sub === 'toggle' ? !effective : sub === 'on';
   const how = await pool.setSessionDanger(activeTk, next, next);
+  if (how === 'missing') return '❌ 会话在切换期间已被关闭';
   log().warn({ threadKey: activeTk, danger: next, how }, 'danger mode 会话级切换');
   // 群标签联动（best-effort，异步不阻塞回复）：on → 打 Danger 标签，off → 移除
   if (cfg.danger_tag) {
@@ -115,27 +118,21 @@ export const dangerCommand: CommandFn = async (args, meta, { cfg, pool }) => {
     : `🔒 **当前会话** Danger 模式已关闭（恢复审批流），上下文保留${note}\n其他会话不受影响 · \`/danger clear\` 回归全局`;
 };
 
-/** threadKey 字符串 → ThreadKey 对象 */
-function parseKey(tk: string): { chatId: string; senderId: string; slot: string } {
-  const parts = tk.split(':');
-  return {
-    chatId: parts[0] ?? '',
-    senderId: parts[1] ?? '',
-    slot: parts.slice(2).join(':') || 'default',
-  };
-}
-
-export const reloadCommand: CommandFn = async (_args, meta, { cfg }) => {
+export const reloadCommand: CommandFn = async (_args, meta, { cfg, requestRestart }) => {
   if (!isPrivileged(cfg, meta.senderId)) {
     log().warn({ senderId: meta.senderId }, '/reload 权限拒绝');
     return DENY_MSG;
   }
   const cfgPath = resolveConfigPath();
   try {
-    const { config: newCfg } = loadConfig(cfgPath);
-    Object.assign(cfg, newCfg);
-    log().info({ path: cfgPath }, '配置已重载');
-    return `♻️ 配置已重载\n来源: \`${cfgPath}\`\n\n新配置对后续新建会话生效（已有会话不受影响）`;
+    loadConfig(cfgPath); // 严格 schema + 正则等完整校验；通过后再重启，不修改当前对象。
+    const scheduled = requestRestart?.() ?? false;
+    if (scheduled) {
+      log().info({ path: cfgPath }, '配置校验通过，已安排 daemon 完整重启');
+      return `♻️ 配置校验通过，daemon 即将完整重启\n来源: \`${cfgPath}\`\n\n所有组件会统一加载新配置。`;
+    }
+    log().info({ path: cfgPath }, '配置校验通过；当前为前台/开发模式，需手动重启');
+    return `✅ 配置校验通过\n来源: \`${cfgPath}\`\n\n当前不是后台 daemon，请手动重启进程使配置生效。`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log().error({ err }, '配置重载失败');

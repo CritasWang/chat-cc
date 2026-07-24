@@ -2,14 +2,15 @@ import { parseThreadKey, type SessionPool } from '../../engine/pool.js';
 import type { MessageMeta } from '../router.js';
 import type { InteractiveCard } from '../replier.js';
 import { btnRow, card, cardHeader, cmdBtn, cmdBtnRefresh, hr, md, toastBtn } from './base.js';
+import { currentSessionKey, listAccessibleSessions } from '../../commands/session-context.js';
 
 export function renderSessionListCard(
   pool: SessionPool,
   meta: MessageMeta,
   userKey: string,
 ): InteractiveCard {
-  const scoped = pool.listByScope(meta.chatId, meta.senderId);
-  const activeKey = pool.getActive(userKey)?.threadKey;
+  const scoped = listAccessibleSessions(meta, pool);
+  const activeKey = currentSessionKey(meta, pool) ?? pool.activeThreadKeyOf(userKey);
 
   if (scoped.length === 0) {
     return card(cardHeader('📋 会话列表', 'blue'), [
@@ -25,8 +26,9 @@ export function renderSessionListCard(
   elements.push(md(`共 **${scoped.length}** 个会话 · ▸ 标记为当前活跃`));
   elements.push(hr());
 
-  for (let i = 0; i < scoped.length; i++) {
-    const s = scoped[i]!;
+  const shown = scoped.slice(0, 20);
+  for (let i = 0; i < shown.length; i++) {
+    const s = shown[i]!;
     const { slot } = parseThreadKey(s.threadKey);
     const isActive = s.threadKey === activeKey;
     const marker = isActive ? '▸ ' : '  ';
@@ -47,6 +49,11 @@ export function renderSessionListCard(
     }
     btns.push(cmdBtnRefresh('⛔ 关闭', 'session', `stop ${slot}`, 'session_list', 'danger'));
     elements.push(btnRow(btns));
+    elements.push(hr());
+  }
+
+  if (scoped.length > shown.length) {
+    elements.push(md(`*…另有 ${scoped.length - shown.length} 个会话未展开，可按 slot 名执行 /session switch 或 /session stop*`));
     elements.push(hr());
   }
 

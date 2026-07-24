@@ -1,4 +1,4 @@
-import { log } from '../logger.js';
+import { log } from "../logger.js";
 import {
   applyEvent,
   closeStreamingText,
@@ -6,12 +6,16 @@ import {
   initialLiveState,
   renderLiveCard,
   type LiveCardState,
-} from '../feishu/cards/live.js';
-import { card, cardHeader, md } from '../feishu/cards/base.js';
-import { renderAskUserCard, parseAskUserInput, initialAskState } from '../feishu/cards/ask-user.js';
-import { registerAskCard } from '../feishu/ask-store.js';
-import type { Replier } from '../feishu/replier.js';
-import type { EngineEvent, UsageSnapshot } from './events.js';
+} from "../feishu/cards/live.js";
+import { card, cardHeader, md } from "../feishu/cards/base.js";
+import {
+  renderAskUserCard,
+  parseAskUserInput,
+  initialAskState,
+} from "../feishu/cards/ask-user.js";
+import { registerAskCard } from "../feishu/ask-store.js";
+import type { Replier } from "../feishu/replier.js";
+import type { EngineEvent, UsageSnapshot } from "./events.js";
 
 interface ReplyTarget {
   rootMessageId: string;
@@ -33,6 +37,8 @@ interface Turn {
 
 export interface ResultCtx {
   ok: boolean;
+  /** 用户主动中断；调用方仍可记账，但不应发送“失败/完成”提醒。 */
+  interrupted?: boolean;
   /** 完成后在源会话补发一条新消息（话题会话自动回到 thread）——卡片 PATCH 不产生未读红点，需要提醒时用这个 */
   sendFollowUp: (text: string) => Promise<void>;
 }
@@ -40,12 +46,22 @@ export interface ResultCtx {
 export interface StreamerDeps {
   replier: Replier;
   throttleMs: number;
-  onResult?: (threadKey: string, usage?: UsageSnapshot, durationMs?: number, ctx?: ResultCtx) => void | Promise<void>;
+  maxChunkSize?: number;
+  onResult?: (
+    threadKey: string,
+    usage?: UsageSnapshot,
+    durationMs?: number,
+    ctx?: ResultCtx,
+  ) => void | Promise<void>;
+  getInteractionContext?: (
+    threadKey: string,
+  ) => { requesterId: string; chatId: string; generation: number } | undefined;
 }
 
 export class LiveStreamer {
   private readonly turns = new Map<string, Turn>();
   private readonly replyTargets = new Map<string, ReplyTarget>();
+  private readonly interrupted = new Map<string, NodeJS.Timeout>();
 
   constructor(private readonly deps: StreamerDeps) {}
 
@@ -57,6 +73,33 @@ export class LiveStreamer {
     this.replyTargets.set(threadKey, target);
   }
 
+  /** 读取当前/下一轮的回复锚点，供审批等带外卡片复用；不消费状态。 */
+  replyTargetOf(threadKey: string): ReplyTarget | undefined {
+    return this.turns.get(threadKey)?.replyTarget ?? this.replyTargets.get(threadKey);
+  }
+
+  /** PendingQueue 重试耗尽后的用户可见通知；话题会话沿用尚未消费的回复锚点。 */
+  async notifyQueueFailure(threadKey: string, chatId: string, text: string): Promise<void> {
+    const target = this.replyTargets.get(threadKey);
+    this.replyTargets.delete(threadKey);
+    const mid = target
+      ? await this.deps.replier.replyText(target.rootMessageId, text, { inThread: target.inThread })
+      : await this.deps.replier.sendText(chatId, text);
+    if (!mid) log().error({ threadKey, chatId }, "积压消息失败通知发送失败");
+  }
+
+  /** 会话级带外通知：话题会话回到原 thread，且不消费下一轮直播卡的回复锚点。 */
+  async sendNoticeCard(
+    threadKey: string,
+    chatId: string,
+    cardJson: Parameters<Replier["sendCard"]>[1],
+  ): Promise<string | undefined> {
+    const target = this.replyTargetOf(threadKey);
+    return target
+      ? this.deps.replier.replyCard(target.rootMessageId, cardJson, { inThread: target.inThread })
+      : this.deps.replier.sendCard(chatId, cardJson);
+  }
+
   async onEvent(
     chatId: string,
     threadKey: string,
@@ -64,33 +107,55 @@ export class LiveStreamer {
     cwd?: string,
     engine?: string,
   ): Promise<void> {
+    if (this.interrupted.has(threadKey)) {
+      // /stop 先把 key 放入抑制表，再中断底层 query。底层随后到达的迟发文本/终态
+      // 不能重新 ensureTurn 创建一张“失败”卡；终态仅用于清理与记账。
+      if (ev.kind === "result" || ev.kind === "error") {
+        this.clearInterrupted(threadKey);
+        await this.deps.onResult?.(
+          threadKey,
+          ev.kind === "result" ? ev.usage : undefined,
+          ev.kind === "result" ? ev.durationMs : undefined,
+          { ok: false, interrupted: true, sendFollowUp: async () => {} },
+        );
+      }
+      return;
+    }
     const turn = this.ensureTurn(chatId, threadKey, ev, cwd, engine);
     if (!turn) return;
 
     switch (ev.kind) {
-      case 'init':
+      case "init":
         break;
-      case 'assistant-text':
-      case 'tool-result':
+      case "assistant-text":
+      case "tool-result":
         applyEvent(turn.state, ev);
         this.schedulePatch(turn);
         break;
-      case 'tool-use':
-        if (ev.name === 'AskUserQuestion') {
+      case "tool-use":
+        if (ev.name === "AskUserQuestion") {
           const questions = parseAskUserInput(ev.input);
           if (questions.length > 0) {
             // 有状态提问卡：注册 messageId → 状态，点选后原地 PATCH 反馈
-            const askState = initialAskState(turn.threadKey, questions);
-            const mid = await this.sendToTurn(turn, renderAskUserCard(askState));
+            const context = this.deps.getInteractionContext?.(turn.threadKey);
+            const askState = initialAskState(
+              turn.threadKey,
+              questions,
+              context,
+            );
+            const mid = await this.sendToTurn(
+              turn,
+              renderAskUserCard(askState),
+            );
             if (mid) registerAskCard(mid, askState);
           }
         }
         applyEvent(turn.state, ev);
         this.schedulePatch(turn);
         break;
-      case 'result':
-        turn.state.phase = ev.ok ? 'done' : 'error';
-        if (!ev.ok) turn.state.error = ev.text || '执行失败';
+      case "result":
+        turn.state.phase = ev.ok ? "done" : "error";
+        if (!ev.ok) turn.state.error = ev.text || "执行失败";
         turn.state.usage = ev.usage;
         turn.state.durationMs = ev.durationMs;
         closeStreamingText(turn.state);
@@ -108,8 +173,8 @@ export class LiveStreamer {
           sendFollowUp: this.makeFollowUp(turn),
         });
         break;
-      case 'error':
-        turn.state.phase = 'error';
+      case "error":
+        turn.state.phase = "error";
         turn.state.error = ev.message;
         closeStreamingText(turn.state);
         await turn.chain;
@@ -128,14 +193,40 @@ export class LiveStreamer {
 
   /** 外部主动通知"用户已中断" — 同步摘除 turn 防复用，异步 PATCH 旧卡片 */
   async markInterrupted(threadKey: string): Promise<void> {
+    this.clearInterrupted(threadKey);
+    const expiry = setTimeout(
+      () => this.interrupted.delete(threadKey),
+      5 * 60_000,
+    );
+    expiry.unref?.();
+    this.interrupted.set(threadKey, expiry);
+    this.replyTargets.delete(threadKey);
+    await this.detachTurn(threadKey);
+  }
+
+  /** 会话关闭/重启时只摘除旧 turn，不抑制新 generation 的事件。 */
+  async discardTurn(threadKey: string): Promise<void> {
+    this.clearInterrupted(threadKey);
+    this.replyTargets.delete(threadKey);
+    await this.detachTurn(threadKey);
+  }
+
+  private async detachTurn(threadKey: string): Promise<void> {
     const turn = this.turns.get(threadKey);
     if (!turn) return;
     // 先同步删除：同 threadKey 立即重启时不会找到旧 turn
     this.turns.delete(threadKey);
-    turn.state.phase = 'interrupted';
+    turn.state.phase = "interrupted";
     closeStreamingText(turn.state);
     // 异步 PATCH 旧卡片（fire-and-forget，已从 map 摘除，不影响新 turn）
-    void this.flushNow(turn);
+    void this.flushNow(turn).catch((err) =>
+      log().warn({ err, threadKey }, "中断卡片 PATCH 失败"),
+    );
+  }
+
+  /** 底层 interrupt 失败时撤销终态抑制，避免误吞后续正常事件。 */
+  cancelInterrupted(threadKey: string): void {
+    this.clearInterrupted(threadKey);
   }
 
   private ensureTurn(
@@ -148,14 +239,7 @@ export class LiveStreamer {
     let turn = this.turns.get(threadKey);
     if (turn) return turn;
 
-    // 会话级事件发生时即起占位卡片（init 即给"已连接"反馈，避免冷启动期间用户无感知）
-    if (
-      ev.kind !== 'assistant-text' &&
-      ev.kind !== 'tool-use' &&
-      ev.kind !== 'init'
-    ) {
-      return undefined;
-    }
+    // 任意事件都必须有可见终点：启动前失败可能直接以 result/error 作为首事件。
 
     const replyTarget = this.replyTargets.get(threadKey);
     if (replyTarget) this.replyTargets.delete(threadKey);
@@ -178,13 +262,19 @@ export class LiveStreamer {
     turn.chain = (async () => {
       const firstCard = renderLiveCard(turn!.state);
       const mid = turn!.replyTarget
-        ? await this.deps.replier.replyCard(turn!.replyTarget.rootMessageId, firstCard, {
-            inThread: turn!.replyTarget.inThread,
-          })
+        ? await this.deps.replier.replyCard(
+            turn!.replyTarget.rootMessageId,
+            firstCard,
+            {
+              inThread: turn!.replyTarget.inThread,
+            },
+          )
         : await this.deps.replier.sendCard(chatId, firstCard);
       if (mid) turn!.messageId = mid;
-      else log().error({ threadKey }, '首次发卡片失败，后续 PATCH 将不可用');
-    })();
+      else log().error({ threadKey }, "首次发卡片失败，后续 PATCH 将不可用");
+    })().catch((err) => {
+      log().error({ err, threadKey }, "首次发卡片异常，终态将走降级消息");
+    });
     return turn;
   }
 
@@ -194,7 +284,9 @@ export class LiveStreamer {
     const delay = Math.max(0, this.deps.throttleMs - since);
     turn.patchTimer = setTimeout(() => {
       turn.patchTimer = undefined;
-      void this.flushNow(turn);
+      void this.flushNow(turn).catch((err) =>
+        log().warn({ err, threadKey: turn.threadKey }, "直播卡片 PATCH 失败"),
+      );
     }, delay);
   }
 
@@ -204,29 +296,55 @@ export class LiveStreamer {
       turn.patchTimer = undefined;
     }
     // 串行化：等待 first-send chain 以及上一次 patch
-    turn.chain = turn.chain.then(async () => {
-      if (!turn.messageId) return;
-      const ok = await this.deps.replier.patchCard(turn.messageId, renderLiveCard(turn.state));
-      if (ok) {
-        turn.lastPatchAt = Date.now();
-        return;
-      }
-      // 卡片更新失败 — 仅在终态（done/error）做 fallback
-      const isTerminal = turn.state.phase === 'done' || turn.state.phase === 'error';
-      if (!isTerminal) return;
+    turn.chain = turn.chain
+      .catch((err) => {
+        log().warn(
+          { err, threadKey: turn.threadKey },
+          "直播卡片前序发送链异常，继续收尾",
+        );
+      })
+      .then(async () => {
+        if (!turn.messageId) return;
+        const ok = await this.deps.replier.patchCard(
+          turn.messageId,
+          renderLiveCard(turn.state),
+        );
+        if (ok) {
+          turn.lastPatchAt = Date.now();
+          return;
+        }
+        // 卡片更新失败 — 仅在终态（done/error）做 fallback
+        const isTerminal =
+          turn.state.phase === "done" || turn.state.phase === "error";
+        if (!isTerminal) return;
 
-      const text = fullText(turn.state);
-      // 用精简卡片重试（去掉正文，仅保留状态信息）
-      const minState: LiveCardState = {
-        ...turn.state,
-        blocks: [{ kind: 'text', content: '（内容过长，已作为消息发送 ↓）', streaming: false }],
-      };
-      await this.deps.replier.patchCard(turn.messageId, renderLiveCard(minState));
-      // 全量内容分批发送为文本消息
-      if (text.trim()) {
-        await this.sendBatchedMarkdown(turn, text);
-      }
-    });
+        const text = fullText(turn.state);
+        // 用精简卡片重试（去掉正文，仅保留状态信息）
+        const minState: LiveCardState = {
+          ...turn.state,
+          blocks: [
+            {
+              kind: "text",
+              content: "（内容过长，已作为消息发送 ↓）",
+              streaming: false,
+            },
+          ],
+        };
+        await this.deps.replier.patchCard(
+          turn.messageId,
+          renderLiveCard(minState),
+        );
+        // 全量内容分批发送为文本消息
+        if (text.trim()) {
+          await this.sendBatchedMarkdown(turn, text);
+        }
+      })
+      .catch((err) => {
+        log().error(
+          { err, threadKey: turn.threadKey },
+          "直播卡片更新/降级发送异常",
+        );
+      });
     await turn.chain;
   }
 
@@ -234,9 +352,13 @@ export class LiveStreamer {
   private makeFollowUp(turn: Turn): (text: string) => Promise<void> {
     return async (text: string) => {
       if (turn.replyTarget) {
-        await this.deps.replier.replyText(turn.replyTarget.rootMessageId, text, {
-          inThread: turn.replyTarget.inThread,
-        });
+        await this.deps.replier.replyText(
+          turn.replyTarget.rootMessageId,
+          text,
+          {
+            inThread: turn.replyTarget.inThread,
+          },
+        );
       } else {
         await this.deps.replier.sendText(turn.chatId, text);
       }
@@ -244,53 +366,86 @@ export class LiveStreamer {
   }
 
   /** 出站卡片：话题会话回复到 thread，否则直接发群 */
-  private async sendToTurn(turn: Turn, cardJson: Parameters<Replier['sendCard']>[1]): Promise<string | undefined> {
+  private async sendToTurn(
+    turn: Turn,
+    cardJson: Parameters<Replier["sendCard"]>[1],
+  ): Promise<string | undefined> {
     if (turn.replyTarget) {
-      return this.deps.replier.replyCard(turn.replyTarget.rootMessageId, cardJson, {
-        inThread: turn.replyTarget.inThread,
-      });
+      return this.deps.replier.replyCard(
+        turn.replyTarget.rootMessageId,
+        cardJson,
+        {
+          inThread: turn.replyTarget.inThread,
+        },
+      );
     }
     return this.deps.replier.sendCard(turn.chatId, cardJson);
   }
 
   /** 首次卡片发送失败后，将终态内容作为独立文本消息降级发送 */
-  private async sendTerminalFallback(turn: Turn, resultOrError: EngineEvent | string): Promise<void> {
-    const text = typeof resultOrError === 'string'
-      ? resultOrError
-      : (resultOrError.kind === 'result' && resultOrError.text ? resultOrError.text : fullText(turn.state));
-    if (!text.trim()) return;
-    await this.sendBatchedMarkdown(turn, text);
+  private async sendTerminalFallback(
+    turn: Turn,
+    resultOrError: EngineEvent | string,
+  ): Promise<void> {
+    const text =
+      typeof resultOrError === "string"
+        ? resultOrError
+        : resultOrError.kind === "result" && resultOrError.text
+          ? resultOrError.text
+          : fullText(turn.state);
+    const fallback =
+      text.trim() ||
+      (turn.state.phase === "error"
+        ? "执行失败（无详细错误信息）"
+        : "执行完成（无文本输出）");
+    await this.sendBatchedMarkdown(turn, fallback);
   }
 
   /** 将长文本分段发送为飞书 Markdown 卡片 */
-  private async sendBatchedMarkdown(turn: Turn, text: string, chunkSize = 3500): Promise<void> {
+  private async sendBatchedMarkdown(
+    turn: Turn,
+    text: string,
+    chunkSize = this.deps.maxChunkSize ?? 3500,
+  ): Promise<void> {
     const chunks = splitByParagraph(text, chunkSize);
     const total = chunks.length;
     for (let i = 0; i < total; i++) {
-      const title = total === 1 ? '📄 完整内容' : `📄 内容 (${i + 1}/${total})`;
-      await this.sendToTurn(turn, card(cardHeader(title, 'grey'), [md(chunks[i]!)]));
+      const title = total === 1 ? "📄 完整内容" : `📄 内容 (${i + 1}/${total})`;
+      await this.sendToTurn(
+        turn,
+        card(cardHeader(title, "grey"), [md(chunks[i]!)]),
+      );
     }
+  }
+
+  private clearInterrupted(threadKey: string): void {
+    const timer = this.interrupted.get(threadKey);
+    if (timer) clearTimeout(timer);
+    this.interrupted.delete(threadKey);
   }
 }
 
 /** 按段落边界拆分长文本，每段不超过 maxLen 字符 */
-function splitByParagraph(text: string, maxLen: number): string[] {
-  const paragraphs = text.split(/\n{2,}/);
+export function splitByParagraph(text: string, maxLen: number): string[] {
+  if (maxLen <= 0) throw new Error("maxLen must be positive");
   const chunks: string[] = [];
-  let buf = '';
-
-  for (const p of paragraphs) {
-    const candidate = buf ? buf + '\n\n' + p : p;
-    if (candidate.length > maxLen && buf) {
-      chunks.push(buf);
-      buf = p.length > maxLen ? p.slice(0, maxLen) : p;
-    } else if (candidate.length > maxLen) {
-      chunks.push(candidate.slice(0, maxLen));
-      buf = '';
-    } else {
-      buf = candidate;
+  let offset = 0;
+  while (offset < text.length) {
+    const remaining = text.length - offset;
+    if (remaining <= maxLen) {
+      chunks.push(text.slice(offset));
+      break;
     }
+
+    const window = text.slice(offset, offset + maxLen + 1);
+    let cut = window.lastIndexOf("\n\n", maxLen);
+    if (cut < Math.floor(maxLen / 3)) cut = window.lastIndexOf("\n", maxLen);
+    if (cut < Math.floor(maxLen / 3)) cut = maxLen;
+    else if (window.startsWith("\n\n", cut)) cut += 2;
+    else if (window[cut] === "\n") cut += 1;
+
+    chunks.push(text.slice(offset, offset + cut));
+    offset += cut;
   }
-  if (buf) chunks.push(buf);
-  return chunks.length > 0 ? chunks : [text.slice(0, maxLen)];
+  return chunks.length > 0 ? chunks : [""];
 }

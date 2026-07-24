@@ -9,7 +9,8 @@ import { btnRow, card, cardHeader, cmdBtn, cmdBtnRefresh, hr, md } from './base.
 
 function getVersionInfo(): { version: string; commit: string; sdkVersion: string } {
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const pkgPath = resolve(__dirname, '..', '..', '..', 'package.json');
+  const packageRoot = resolve(__dirname, '..', '..', '..');
+  const pkgPath = resolve(packageRoot, 'package.json');
   try {
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
       version?: string;
@@ -17,7 +18,11 @@ function getVersionInfo(): { version: string; commit: string; sdkVersion: string
     };
     let commit = 'unknown';
     try {
-      commit = execSync('git rev-parse --short HEAD', { encoding: 'utf8', timeout: 3000 }).trim();
+      commit = execSync('git rev-parse --short HEAD', {
+        cwd: packageRoot,
+        encoding: 'utf8',
+        timeout: 3000,
+      }).trim();
     } catch { /* not a git repo or git not available */ }
     return {
       version: pkg.version ?? 'unknown',
@@ -28,6 +33,8 @@ function getVersionInfo(): { version: string; commit: string; sdkVersion: string
     return { version: 'unknown', commit: 'unknown', sdkVersion: 'unknown' };
   }
 }
+
+export const MAX_STATUS_SESSIONS = 20;
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
@@ -49,8 +56,10 @@ export function renderStatusCard(
   apiProfile?: { name: string; baseUrl: string },
   /** chatId → 群名（异步预解析后传入；缺省回落显示 threadKey） */
   chatNames?: Map<string, string>,
+  /** 已在命令层完成鉴权过滤的会话；缺省仅供内部管理场景使用全量。 */
+  visibleSessions?: ReturnType<SessionPool['list']>,
 ): InteractiveCard {
-  const sessions = pool.list();
+  const sessions = visibleSessions ?? pool.list();
   const activeCount = sessions.filter((s) => s.active).length;
   const vi = getVersionInfo();
 
@@ -67,7 +76,8 @@ export function renderStatusCard(
   if (sessions.length === 0) {
     sessionElems.push(md('*(无会话)*'));
   } else {
-    for (const s of sessions) {
+    const shown = sessions.slice(0, MAX_STATUS_SESSIONS);
+    for (const s of shown) {
       const parsed = parseThreadKey(s.threadKey);
       const m = pool.getMeta(s.threadKey);
       const marker = s.active ? '🟢' : '⚪';
@@ -84,6 +94,9 @@ export function renderStatusCard(
           cmdBtnRefresh('⏹ 关闭该会话', 'session', `stop ${s.threadKey}`, 'status', 'danger'),
         ]),
       );
+    }
+    if (sessions.length > shown.length) {
+      sessionElems.push(md(`*…另有 ${sessions.length - shown.length} 个会话未展开，可按 slot 名管理*`));
     }
   }
 

@@ -1,4 +1,4 @@
-import { parseThreadKey, topicThreadKey } from '../engine/pool.js';
+import { topicThreadKey } from '../engine/pool.js';
 import { senderKey, type CommandFn } from './types.js';
 
 /**
@@ -22,11 +22,11 @@ export const clearCommand: CommandFn = async (_args, meta, { pool }) => {
   }
 
   const m = pool.getMeta(tk);
-  const cwd = m?.cwd ?? '.';
+  if (!m) return '❌ 会话元数据缺失，请重新启动会话';
+  const cwd = m.cwd;
 
-  await pool.stop(tk, { keepMeta: true });
-  pool.clearSessionId(tk); // 丢弃 resumeId —— 下次启动即全新上下文
-  pool.start(parseThreadKey(tk), cwd);
+  const restarted = await pool.resetContext(tk, cwd);
+  if (!restarted) return '❌ 会话在清理期间已被关闭，请重新启动会话';
 
   return `🧹 上下文已清空，会话已重开\n**cwd**: \`${cwd}\`（引擎/profile/权限等设置保留）\n直接发消息开始新对话`;
 };

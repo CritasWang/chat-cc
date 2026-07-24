@@ -1,5 +1,6 @@
 import { senderKey, type CommandFn } from './types.js';
-import { parseThreadKey, topicThreadKey } from '../engine/pool.js';
+import { parseThreadKey, SessionPoolCapacityError, topicThreadKey } from '../engine/pool.js';
+import { PendingQueueCapacityError } from '../engine/pending-queue.js';
 
 /**
  * /s <text>  — 向会话发送一条消息（非命令消息也会走这里）
@@ -24,21 +25,41 @@ export const sendCommand: CommandFn = async (args, meta, { cfg, pool, streamer, 
       // 新话题：从本群锚点会话（/new chat 预建的 default）继承 cwd 与会话设置
       const anchorTk = pool.activeThreadKeyOf(senderKey(meta));
       const anchor = anchorTk ? pool.getMeta(anchorTk) : undefined;
-      pool.start(parseThreadKey(tk), anchor?.cwd ?? cfg.default_cwd, {
-        ...(anchor?.agent ? { agent: anchor.agent } : {}),
-        ...(anchor?.apiProfile ? { apiProfile: anchor.apiProfile } : {}),
-        ...(anchor?.danger !== undefined ? { danger: anchor.danger } : {}),
-      });
+      try {
+        pool.start(parseThreadKey(tk), anchor?.cwd ?? cfg.default_cwd, {
+          ...(anchor?.agent ? { agent: anchor.agent } : {}),
+          ...(anchor?.apiProfile ? { apiProfile: anchor.apiProfile } : {}),
+          ...(anchor?.danger !== undefined ? { danger: anchor.danger } : {}),
+        });
+      } catch (err) {
+        if (err instanceof SessionPoolCapacityError) {
+          return `⏳ 活跃会话已达上限（${err.limit}），请先关闭不用的会话或等待空闲回收`;
+        }
+        throw err;
+      }
     }
+    try {
+      pending.push(tk, text, meta.senderId);
+    } catch (err) {
+      if (err instanceof PendingQueueCapacityError) return '⏳ 当前会话积压已满，请等待本轮结束或用 /stop 中断';
+      throw err;
+    }
+    // 仅在消息成功入队后更新回复锚点；容量拒绝的消息不能劫持下一批输出位置。
     streamer.setReplyTarget(tk, { rootMessageId: meta.messageId, inThread: true });
-    pending.push(tk, text);
     return;
   }
 
   // —— 普通/单聊：投递到活跃会话 ——
-  const sess = pool.getOrResumeActive(senderKey(meta));
-  if (!sess) return '当前没有活跃的会话，使用 /session start 开启';
+  const tk = pool.activeThreadKeyOf(senderKey(meta));
+  if (!tk || (!pool.get(tk) && !pool.getMeta(tk))) {
+    return '当前没有活跃的会话，使用 /session start 开启';
+  }
 
-  pending.push(sess.threadKey, text);
+  try {
+    pending.push(tk, text, meta.senderId);
+  } catch (err) {
+    if (err instanceof PendingQueueCapacityError) return '⏳ 当前会话积压已满，请等待本轮结束或用 /stop 中断';
+    throw err;
+  }
   return;
 };

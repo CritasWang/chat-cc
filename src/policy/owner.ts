@@ -8,9 +8,8 @@ import type { Config } from '../config.js';
  * 管理员级敏感权限，代价过重，已移除。
  *
  * - admin_users 配置了 → 仅列表内 open_id 可执行敏感命令
- * - admin_users 为空 → 不额外设限（维持 allowed_users 白名单语义，向后兼容）
+ * - admin_users 为空 → 无人可执行敏感命令（fail-closed）
  */
 export function isPrivileged(cfg: Pick<Config, 'admin_users'>, senderId: string): boolean {
-  if (cfg.admin_users.length === 0) return true;
   return cfg.admin_users.includes(senderId);
 }

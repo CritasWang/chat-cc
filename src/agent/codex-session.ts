@@ -27,6 +27,8 @@ export interface CodexSessionConfig extends AgentSessionCallbacks {
   resumeId?: string;
   /** 单轮超时（毫秒），超时 SIGTERM；<=0 不限制 */
   turnTimeoutMs?: number;
+  /** 传给 codex 子进程的最小环境。 */
+  env?: NodeJS.ProcessEnv;
 }
 
 export class CodexSession implements AgentSession {
@@ -40,6 +42,7 @@ export class CodexSession implements AgentSession {
   private draining = false;
   private closed = false;
   private current: ChildProcessWithoutNullStreams | undefined;
+  private currentRun: Promise<void> | undefined;
   private interrupted = false;
 
   constructor(private readonly cfg: CodexSessionConfig) {
@@ -53,38 +56,33 @@ export class CodexSession implements AgentSession {
   }
 
   send(text: string): void {
-    if (this.closed) return;
+    if (this.closed) throw new Error(`codex session ${this.threadKey} is closed`);
     this.lastUsedAt = new Date();
     this.queue.push(text);
-    void this.drain();
+    void this.drain().catch((err) => {
+      log().error({ err, threadKey: this.threadKey }, 'codex drain 异常');
+      void this.emit({ kind: 'error', message: `codex 队列异常: ${String(err)}` }).catch(() => {});
+    });
   }
 
   async interrupt(): Promise<void> {
     this.interrupted = true;
     this.queue.length = 0;
+    const run = this.currentRun;
     if (this.current) {
-      this.current.kill('SIGTERM');
+      await terminateProcess(this.current, 2_000);
     }
+    if (run) await settleWithin(run.catch(() => {}), 3_000);
   }
 
   async close(timeoutMs = 5000): Promise<void> {
     this.closed = true;
     this.queue.length = 0;
+    const run = this.currentRun;
     if (this.current) {
-      this.current.kill('SIGTERM');
-      // 宽限期后强杀
-      const proc = this.current;
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(() => {
-          proc.kill('SIGKILL');
-          resolve();
-        }, timeoutMs);
-        proc.once('exit', () => {
-          clearTimeout(t);
-          resolve();
-        });
-      });
+      await terminateProcess(this.current, Math.max(0, timeoutMs - 1_000));
     }
+    if (run) await settleWithin(run.catch(() => {}), Math.max(500, timeoutMs));
   }
 
   private async drain(): Promise<void> {
@@ -94,48 +92,57 @@ export class CodexSession implements AgentSession {
       while (this.queue.length > 0 && !this.closed) {
         const prompt = this.queue.shift()!;
         this.interrupted = false;
-        await this.runOnce(prompt);
+        const run = this.runOnce(prompt);
+        this.currentRun = run;
+        try {
+          await run;
+        } finally {
+          if (this.currentRun === run) this.currentRun = undefined;
+        }
       }
     } finally {
       this.draining = false;
     }
   }
 
-  private async runOnce(prompt: string): Promise<void> {
+  private async runOnce(prompt: string, allowResumeRecovery = true): Promise<void> {
+    const resumeIdAtStart = this.sessionId;
     const bin = this.cfg.codexBin || 'codex';
     const args = buildCodexArgs({
       cwd: this.cwd,
       sandbox: this.cfg.sandbox,
-      ...(this.sessionId ? { threadId: this.sessionId } : {}),
+      ...(resumeIdAtStart ? { threadId: resumeIdAtStart } : {}),
       ...(this.cfg.model ? { model: this.cfg.model } : {}),
     });
     const translator = new CodexJsonlTranslator();
 
-    log().info({ threadKey: this.threadKey, resume: !!this.sessionId }, 'codex run 启动');
+    log().info({ threadKey: this.threadKey, resume: !!resumeIdAtStart }, 'codex run 启动');
 
     let proc: ChildProcessWithoutNullStreams;
     try {
-      proc = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      proc = spawn(bin, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        ...(this.cfg.env ? { env: this.cfg.env } : {}),
+      });
     } catch (err) {
       await this.emit({ kind: 'error', message: `codex 启动失败: ${String(err)}` });
       return;
     }
     this.current = proc;
-
-    // ENOENT / EACCES 等 spawn 异步错误不抛同步异常，必须监听 error 事件，
-    // 否则会成为未处理 EventEmitter error 导致进程 crash。
-    proc.on('error', () => {
-      // 进程启动失败：error → close（无 exit）→ exitCode=-2，
-      // 现有 exit 与 terminalEmitted 逻辑能识别异常退出并产出 error EngineEvent，
-      // 此处仅需监听以阻止 crash——无需额外 emit。
-    });
+    // 必须在下一 tick 前监听 error/close。spawn 失败（ENOENT/EACCES）可能没有 exit 事件，
+    // 因此统一等待 close，不能只 await exit。
+    const processDone = observeProcess(proc);
 
     let killTimer: NodeJS.Timeout | undefined;
+    let timedOut = false;
     const timeoutMs = this.cfg.turnTimeoutMs ?? 0;
     if (timeoutMs > 0) {
       killTimer = setTimeout(() => {
-        log().warn({ threadKey: this.threadKey, timeoutMs }, 'codex run 超时，SIGTERM');
-        proc.kill('SIGTERM');
+        timedOut = true;
+        log().warn({ threadKey: this.threadKey, timeoutMs }, 'codex run 超时，开始终止进程');
+        void terminateProcess(proc, 2_000).catch((err) =>
+          log().warn({ err, threadKey: this.threadKey }, 'codex 超时终止进程失败'),
+        );
       }, timeoutMs);
       killTimer.unref?.();
     }
@@ -153,6 +160,9 @@ export class CodexSession implements AgentSession {
     proc.stdin.end();
 
     const rl = createInterface({ input: proc.stdout });
+    const diagnosticParts: string[] = [];
+    let sawWork = false;
+    let recoverStaleResume = false;
     try {
       for await (const line of rl) {
         const trimmed = line.trim();
@@ -163,33 +173,111 @@ export class CodexSession implements AgentSession {
         } catch {
           continue; // 非 JSON 行（横幅/告警）忽略
         }
+        if (isDiagnosticEvent(parsed)) pushDiagnostic(diagnosticParts, JSON.stringify(parsed));
         for (const ev of this.tagInit(translator.translate(parsed))) {
-          await this.emit(ev);
-        }
-      }
-      // 等进程退出，拿 exit code
-      const code = await new Promise<number | null>((resolve) => {
-        if (proc.exitCode !== null) resolve(proc.exitCode);
-        else proc.once('exit', (c) => resolve(c));
-      });
-      if (!translator.terminalEmitted()) {
-        const reason = this.interrupted ? 'interrupted' : 'failed';
-        for (const ev of translator.finish(reason)) {
-          if (ev.kind === 'result' && !ev.ok && stderrBuf.length > 0) {
-            ev.text = `${ev.text}\n${stderrBuf.join('').slice(-800)}`.trim();
+          if (ev.kind === 'assistant-text' || ev.kind === 'tool-use' || ev.kind === 'tool-result') {
+            sawWork = true;
+          }
+          if (
+            ev.kind === 'result' &&
+            !ev.ok &&
+            canRecoverStaleResume({
+              allowResumeRecovery,
+              resumeIdAtStart,
+              currentSessionId: this.sessionId,
+              sawWork,
+              interrupted: this.interrupted,
+              timedOut,
+              diagnostic: `${ev.text}\n${diagnosticParts.join('\n')}`,
+            })
+          ) {
+            recoverStaleResume = true;
+            continue;
+          }
+          if (ev.kind === 'result' && timedOut) {
+            ev.ok = false;
+            ev.text = `codex 执行超时（>${Math.ceil(timeoutMs / 60_000)} 分钟），已终止`;
           }
           await this.emit(ev);
         }
+      }
+      let outcome = await settleWithin(processDone, 5_000);
+      if (!outcome.settled) {
+        log().warn({ threadKey: this.threadKey }, 'codex stdout 已结束但进程未退出，开始终止');
+        await terminateProcess(proc, 2_000);
+        outcome = await settleWithin(processDone, 1_500);
+      }
+      if (outcome.settled && outcome.value.error) {
+        pushDiagnostic(diagnosticParts, outcome.value.error.message);
+      }
+      if (stderrBuf.length > 0) pushDiagnostic(diagnosticParts, stderrBuf.join(''));
+
+      recoverStaleResume ||= canRecoverStaleResume({
+        allowResumeRecovery,
+        resumeIdAtStart,
+        currentSessionId: this.sessionId,
+        sawWork,
+        interrupted: this.interrupted,
+        timedOut,
+        diagnostic: diagnosticParts.join('\n'),
+      });
+
+      if (!recoverStaleResume && !translator.terminalEmitted()) {
+        const reason = timedOut ? 'timeout' : this.interrupted ? 'interrupted' : 'failed';
+        for (const ev of translator.finish(reason)) {
+          if (ev.kind === 'result' && !ev.ok) {
+            const diagnostic = [...diagnosticParts, ...stderrBuf].join('\n').slice(-800);
+            if (diagnostic && !ev.text.includes(diagnostic)) {
+              ev.text = `${ev.text}\n${diagnostic}`.trim();
+            }
+          }
+          if (ev.kind === 'result' && timedOut) {
+            ev.ok = false;
+            ev.text = `codex 执行超时（>${Math.ceil(timeoutMs / 60_000)} 分钟），已终止`;
+          }
+          await this.emit(ev);
+        }
+        const code = outcome.settled ? outcome.value.code : null;
         if (code !== 0 && code !== null) {
           log().warn({ threadKey: this.threadKey, code, stderr: stderrBuf.join('').slice(-500) }, 'codex 非零退出');
         }
       }
     } catch (err) {
-      await this.emit({ kind: 'error', message: `codex 运行异常: ${String(err)}` });
+      pushDiagnostic(diagnosticParts, String(err));
+      recoverStaleResume ||= canRecoverStaleResume({
+        allowResumeRecovery,
+        resumeIdAtStart,
+        currentSessionId: this.sessionId,
+        sawWork,
+        interrupted: this.interrupted,
+        timedOut,
+        diagnostic: diagnosticParts.join('\n'),
+      });
+      if (!recoverStaleResume) {
+        await terminateProcess(proc, 2_000).catch(() => {});
+        await this.emit({ kind: 'error', message: `codex 运行异常: ${String(err)}` });
+      }
     } finally {
       if (killTimer) clearTimeout(killTimer);
       rl.close();
-      this.current = undefined;
+      if (this.current === proc) this.current = undefined;
+    }
+
+    if (recoverStaleResume && resumeIdAtStart && !this.closed) {
+      if (this.sessionId === resumeIdAtStart) this.sessionId = undefined;
+      log().warn(
+        { threadKey: this.threadKey, staleSessionId: resumeIdAtStart },
+        'codex resume 失效，已降级为新会话并安全重试当前 prompt',
+      );
+      try {
+        this.cfg.onNotice?.({
+          text: '原 Codex 会话上下文已过期，已新建会话继续',
+          staleSessionId: resumeIdAtStart,
+        });
+      } catch (err) {
+        log().warn({ err, threadKey: this.threadKey }, 'codex resume 自愈通知失败');
+      }
+      await this.runOnce(prompt, false);
     }
   }
 
@@ -204,7 +292,132 @@ export class CodexSession implements AgentSession {
   }
 
   private async emit(ev: EngineEvent): Promise<void> {
+    if (this.closed) return;
     this.lastUsedAt = new Date();
     await this.cfg.onEvent?.(ev);
   }
+}
+
+interface ProcessOutcome {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  error?: Error;
+}
+
+function observeProcess(proc: ChildProcessWithoutNullStreams): Promise<ProcessOutcome> {
+  return new Promise((resolve) => {
+    let spawnError: Error | undefined;
+    proc.once('error', (err) => {
+      spawnError = err;
+    });
+    proc.once('close', (code, signal) => {
+      resolve({ code, signal, ...(spawnError ? { error: spawnError } : {}) });
+    });
+  });
+}
+
+const terminating = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
+
+async function terminateProcess(proc: ChildProcessWithoutNullStreams, graceMs: number): Promise<void> {
+  const existing = terminating.get(proc);
+  if (existing) return existing;
+  const task = (async () => {
+    if (hasExited(proc)) return;
+    // proc.killed 仅表示 kill() 曾成功发送信号，不表示子进程已经退出。
+    if (!proc.killed) proc.kill('SIGTERM');
+    const graceful = await waitForExit(proc, Math.max(0, graceMs));
+    if (graceful || hasExited(proc)) return;
+    proc.kill('SIGKILL');
+    await waitForExit(proc, 1_000);
+  })().finally(() => terminating.delete(proc));
+  terminating.set(proc, task);
+  return task;
+}
+
+function hasExited(proc: ChildProcessWithoutNullStreams): boolean {
+  return proc.exitCode !== null || proc.signalCode !== null;
+}
+
+async function waitForExit(proc: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+  if (hasExited(proc)) return true;
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      proc.off('exit', onExit);
+      proc.off('close', onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    proc.once('exit', onExit);
+    proc.once('close', onExit);
+  });
+}
+
+async function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<{ settled: true; value: T } | { settled: false }> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ settled: true as const, value })),
+      new Promise<{ settled: false }>((resolve) => {
+        timer = setTimeout(() => resolve({ settled: false }), Math.max(0, timeoutMs));
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+interface StaleCheck {
+  allowResumeRecovery: boolean;
+  resumeIdAtStart?: string;
+  currentSessionId?: string;
+  sawWork: boolean;
+  interrupted: boolean;
+  timedOut: boolean;
+  diagnostic: string;
+}
+
+function canRecoverStaleResume(check: StaleCheck): boolean {
+  return Boolean(
+    check.allowResumeRecovery &&
+      check.resumeIdAtStart &&
+      check.currentSessionId === check.resumeIdAtStart &&
+      !check.sawWork &&
+      !check.interrupted &&
+      !check.timedOut &&
+      isStaleCodexResumeError(check.diagnostic),
+  );
+}
+
+/** 仅在“带 resume 且尚未产生任何工作事件”时使用，避免副作用重放。 */
+export function isStaleCodexResumeError(text: string): boolean {
+  const value = text.toLowerCase();
+  return (
+    value.includes('thread not found') ||
+    value.includes('session not found') ||
+    value.includes('failed to resume session from') ||
+    value.includes('failed to resume thread') ||
+    value.includes('no rollout found')
+  );
+}
+
+function isDiagnosticEvent(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const type = (raw as Record<string, unknown>)['type'];
+  return type === 'error' || type === 'turn.failed';
+}
+
+function pushDiagnostic(parts: string[], value: string): void {
+  if (!value) return;
+  parts.push(value.slice(-2_000));
+  if (parts.length > 20) parts.shift();
 }

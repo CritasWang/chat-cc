@@ -5,6 +5,7 @@ import type { Replier } from './replier.js';
  * 失败也缓存（占位名），避免每次渲染都打 API；TTL 后自动重查。
  */
 const TTL_MS = 10 * 60_000;
+const MAX_CACHE_SIZE = 1_000;
 
 export class ChatNameCache {
   private readonly cache = new Map<string, { name: string; at: number }>();
@@ -17,7 +18,13 @@ export class ChatNameCache {
     const info = await this.replier.getChatInfo(chatId);
     // p2p 单聊无群名；查询失败给尾缀占位便于区分
     const name = info?.name || `单聊/未知(…${chatId.slice(-6)})`;
+    this.cache.delete(chatId);
     this.cache.set(chatId, { name, at: Date.now() });
+    while (this.cache.size > MAX_CACHE_SIZE) {
+      const oldest = this.cache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.cache.delete(oldest);
+    }
     return name;
   }
 

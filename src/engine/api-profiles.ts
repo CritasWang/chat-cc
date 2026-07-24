@@ -85,6 +85,8 @@ export class ApiProfileStore {
   reload(): void {
     this.loaded = false;
     this.profiles.clear();
+    this.defaultName = undefined;
+    this.currentName = undefined;
     this.ensureLoaded();
   }
 
@@ -100,7 +102,8 @@ export class ApiProfileStore {
 
   /**
    * 会话级解析：指定名字用指定 profile（会话覆盖，类比终端各窗口
-   * 各自 ccuse），未指定或名字已失效则回落全局 current()。
+   * 各自 ccuse）。未指定时跟随全局 current()；显式名字已失效时
+   * 必须 fail-closed，不能带着旧 sessionId 静默切到另一组端点/凭据。
    */
   envOverridesFor(name?: string): Record<string, string> {
     if (name) {
@@ -108,7 +111,7 @@ export class ApiProfileStore {
       if (p) {
         return { ANTHROPIC_AUTH_TOKEN: p.token, ANTHROPIC_BASE_URL: p.baseUrl };
       }
-      log().warn({ name }, '会话指定的 API profile 不存在，回落全局默认');
+      throw new Error(`会话指定的 API profile 不存在: ${name}`);
     }
     return this.envOverrides();
   }

@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import { resolveConfigPath } from '../config.js';
+import { CONFIG_KEYS, parseConfig, resolveConfigPath } from '../config.js';
+import { writeFileAtomicSync } from '../platform/atomic-write.js';
 
 export async function runConfigCmd(args: string[]): Promise<void> {
   const sub = args[0]?.toLowerCase();
@@ -25,7 +26,11 @@ export async function runConfigCmd(args: string[]): Promise<void> {
       console.error(`编辑器异常: ${err.message}（尝试 EDITOR=${editor}）`);
       process.exit(1);
     });
-    await new Promise<void>((resolve) => child.on('close', () => resolve()));
+    const code = await new Promise<number | null>((resolve) => child.on('close', resolve));
+    if (code !== 0) {
+      console.error(`编辑器退出码异常: ${String(code)}`);
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -64,30 +69,31 @@ export async function runConfigCmd(args: string[]): Promise<void> {
     }
     const raw = parseYaml(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
 
-    const KNOWN_KEYS = new Set([
-      'app_id', 'app_secret', 'allowed_users', 'allowed_chats',
-      'default_cwd', 'projects', 'claude_allowed_tools', 'claude_danger_mode',
-      'claude_ask_timeout_min', 'claude_session_timeout_min', 'max_chunk_size',
-      'shell_whitelist', 'notify_chat_id', 'notify_quiet_minutes', 'notify_done_ping', 'status_push_interval_min',
-      'status_push_chat_id', 'stream_throttle_ms', 'persistence_dir',
-      'idle_timeout_minutes', 'idle_check_seconds', 'approval_timeout_ms',
-      'auto_approve_tools', 'mcp_feishu_rate_limit_ms', 'log_level',
-    ]);
-    if (!KNOWN_KEYS.has(key)) {
-      console.warn(`⚠️  未知配置项: ${key}（仍将写入）`);
+    if (!CONFIG_KEYS.has(key)) {
+      console.error(`未知配置项: ${key}（严格模式下拒绝写入）`);
+      process.exitCode = 1;
+      return;
     }
 
     let parsed: unknown = value;
     if (value === 'true') parsed = true;
     else if (value === 'false') parsed = false;
     else if (/^-?\d+(\.\d+)?$/.test(value)) parsed = Number(value);
-    else if (value.startsWith('[')) {
+    else if (value.startsWith('[') || value.startsWith('{')) {
       try { parsed = JSON.parse(value); } catch { /* keep as string */ }
     }
 
-    raw[key] = parsed;
-    writeFileSync(cfgPath, stringifyYaml(raw), 'utf8');
-    console.log(`✅ ${key} = ${JSON.stringify(parsed)}`);
+    const next = { ...raw, [key]: parsed };
+    try {
+      parseConfig(next);
+    } catch (err) {
+      console.error(`配置值无效: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+      return;
+    }
+    writeFileAtomicSync(cfgPath, stringifyYaml(next), { mode: 0o600 });
+    const shown = key === 'app_secret' ? '"<redacted>"' : JSON.stringify(parsed);
+    console.log(`✅ ${key} = ${shown}`);
     return;
   }
 

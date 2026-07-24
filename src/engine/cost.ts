@@ -60,6 +60,9 @@ function addUsage(a: UsageSnapshot, b: UsageSnapshot): UsageSnapshot {
     cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
     cacheCreationTokens: a.cacheCreationTokens + b.cacheCreationTokens,
   };
+  if (a.costUsd !== undefined || b.costUsd !== undefined) {
+    out.costUsd = (a.costUsd ?? 0) + (b.costUsd ?? 0);
+  }
   if (b.model) out.model = b.model;
   else if (a.model) out.model = a.model;
   return out;

@@ -69,6 +69,11 @@ export class CallbackStore {
         for (const n of data) {
           if (typeof n === 'string') this.nonces.add(n);
         }
+        while (this.nonces.size > MAX_PERSISTED_NONCES) {
+          const oldest = this.nonces.values().next().value;
+          if (oldest === undefined) break;
+          this.nonces.delete(oldest);
+        }
       }
     } catch (err) {
       log().warn({ err, path: this.persistPath }, 'callback nonce 持久化文件损坏，忽略');

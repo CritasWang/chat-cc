@@ -10,15 +10,27 @@ export interface AskQuestion {
 /** 提问卡片的可变状态：随用户点选原地 PATCH 更新 */
 export interface AskCardState {
   threadKey: string;
+  requesterId: string;
+  chatId: string;
+  generation: number;
+  expiresAt: number;
   questions: AskQuestion[];
   /** 每题已选项索引集合（单选题至多一个元素） */
   selections: number[][];
   submitted: boolean;
 }
 
-export function initialAskState(threadKey: string, questions: AskQuestion[]): AskCardState {
+export function initialAskState(
+  threadKey: string,
+  questions: AskQuestion[],
+  context: { requesterId?: string; chatId?: string; generation?: number; ttlMs?: number } = {},
+): AskCardState {
   return {
     threadKey,
+    requesterId: context.requesterId ?? '',
+    chatId: context.chatId ?? '',
+    generation: context.generation ?? 0,
+    expiresAt: Date.now() + (context.ttlMs ?? 10 * 60_000),
     questions,
     selections: questions.map(() => []),
     submitted: false,

@@ -1,6 +1,9 @@
-import { senderKey, type CommandFn } from './types.js';
+import { type CommandFn } from './types.js';
 import { maskToken } from '../engine/api-profiles.js';
+import { parseThreadKey } from '../engine/pool.js';
 import { isPrivileged } from '../policy/owner.js';
+import { currentSessionKey } from './session-context.js';
+import { log } from '../logger.js';
 
 /**
  * /profile [list|use <name> [--global]|clear|reload]
@@ -17,6 +20,9 @@ import { isPrivileged } from '../policy/owner.js';
  * 会话级选择随会话持久化（重启/懒恢复后保持）。
  */
 export const profileCommand: CommandFn = async (args, meta, { cfg, pool, apiProfiles }) => {
+  if (!isPrivileged(cfg, meta.senderId)) {
+    return '⛔ API profile 信息与切换仅管理员可用（config `admin_users`）';
+  }
   if (!apiProfiles?.available()) {
     return (
       '当前未配置 API profile（可选功能）。\n' +
@@ -29,12 +35,11 @@ export const profileCommand: CommandFn = async (args, meta, { cfg, pool, apiProf
   const isGlobal = tokens.includes('--global');
   const parts = tokens.filter((t) => t !== '--global');
   const sub = (parts[0] ?? 'list').toLowerCase();
-  const userKey = senderKey(meta);
 
   switch (sub) {
     case 'list': {
       const cur = apiProfiles.current();
-      const activeTk = pool.activeThreadKeyOf(userKey);
+      const activeTk = currentSessionKey(meta, pool);
       const sessionOverride = activeTk ? pool.getMeta(activeTk)?.apiProfile : undefined;
       const lines = apiProfiles.list().map((p) => {
         const marks = [
@@ -67,21 +72,30 @@ export const profileCommand: CommandFn = async (args, meta, { cfg, pool, apiProf
         apiProfiles.use(name);
         const p = apiProfiles.current()!;
         let restarted = 0;
+        let failed = 0;
         for (const s of pool.list()) {
           if (!s.active) continue; // 预热态下次懒恢复自然生效
           if (pool.getMeta(s.threadKey)?.apiProfile) continue; // 有会话级覆盖的不动
-          await pool.stop(s.threadKey, { keepMeta: true });
-          pool.start(parseKey(s.threadKey), pool.getMeta(s.threadKey)?.cwd ?? '.');
-          restarted += 1;
+          const m = pool.getMeta(s.threadKey);
+          if (!m) continue;
+          try {
+            await pool.restart(parseThreadKey(s.threadKey), m.cwd);
+            restarted += 1;
+          } catch (err) {
+            failed += 1;
+            log().warn({ err, threadKey: s.threadKey, profile: name }, '全局 profile 切换时会话重建失败');
+          }
         }
         return (
           `✅ 全局默认已切到 **${p.name}** → ${p.baseUrl}\n` +
-          `已重建 ${restarted} 个跟随全局的会话（上下文保留）；带会话级覆盖的会话不受影响`
+          `已重建 ${restarted} 个跟随全局的会话（上下文保留）` +
+          (failed > 0 ? `；${failed} 个重建失败，已保留 meta 供后续懒恢复` : '') +
+          '；带会话级覆盖的会话不受影响'
         );
       }
 
       // —— 会话级切换：只动当前会话 ——
-      const activeTk = pool.activeThreadKeyOf(userKey);
+      const activeTk = currentSessionKey(meta, pool);
       if (!activeTk) {
         return '当前无活跃会话。切全局默认请用 `/profile use ' + name + ' --global`，或先 `/session start` 开会话';
       }
@@ -98,15 +112,19 @@ export const profileCommand: CommandFn = async (args, meta, { cfg, pool, apiProf
       if (!isPrivileged(cfg, meta.senderId)) {
         return '⛔ 切换 API profile 仅管理员可用（config `admin_users` 可配置）';
       }
-      const activeTk = pool.activeThreadKeyOf(userKey);
+      const activeTk = currentSessionKey(meta, pool);
       if (!activeTk) return '当前无活跃会话';
       const m = pool.getMeta(activeTk);
       if (!m?.apiProfile) return '当前会话没有设置 profile 覆盖（本就跟随全局）';
-      await pool.setSessionApiProfile(activeTk, undefined);
+      const ok = await pool.setSessionApiProfile(activeTk, undefined);
+      if (!ok) return '❌ 会话在切换期间已被关闭';
       return `✅ 当前会话已回归全局默认（${apiProfiles.current()?.name ?? '进程环境'}），上下文保留`;
     }
 
     case 'reload': {
+      if (!isPrivileged(cfg, meta.senderId)) {
+        return '⛔ 重新加载 API profile 仅管理员可用';
+      }
       apiProfiles.reload();
       return `✅ 已重新读取 cc-profiles.zsh（${apiProfiles.list().length} 个 profile）`;
     }
@@ -115,13 +133,3 @@ export const profileCommand: CommandFn = async (args, meta, { cfg, pool, apiProf
       return '用法: /profile [list|use <name> [--global]|clear|reload]';
   }
 };
-
-/** threadKey 字符串 → ThreadKey 对象（避免循环依赖，这里就地解析） */
-function parseKey(tk: string): { chatId: string; senderId: string; slot: string } {
-  const parts = tk.split(':');
-  return {
-    chatId: parts[0] ?? '',
-    senderId: parts[1] ?? '',
-    slot: parts.slice(2).join(':') || 'default',
-  };
-}

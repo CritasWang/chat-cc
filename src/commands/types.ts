@@ -21,6 +21,8 @@ export interface CommandDeps {
   apiProfiles?: ApiProfileStore;
   /** chatId → 群名缓存（状态卡等展示用） */
   chatNames?: ChatNameCache;
+  /** 校验配置后请求 daemon 做完整重启，避免局部热更新造成 split-brain。 */
+  requestRestart?: () => boolean;
 }
 
 /** 命令调用的附加上下文（由 router 在特殊路径下传入，普通命令可忽略） */

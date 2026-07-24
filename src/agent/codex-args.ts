@@ -33,7 +33,7 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
     '-c',
     'approval_policy="never"',
     '-c',
-    'shell_environment_policy.inherit="all"',
+    'shell_environment_policy.inherit="core"',
     '--skip-git-repo-check',
     '-C',
     input.cwd,

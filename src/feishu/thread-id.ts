@@ -26,37 +26,58 @@ export function buildThreadResolver(client: Lark.Client): ThreadResolver {
   async function chatMode(chatId: string): Promise<string> {
     const hit = modeCache.get(chatId);
     if (hit && Date.now() - hit.at < CHAT_MODE_TTL_MS) return hit.mode;
-    try {
-      const resp = await client.im.v1.chat.get({ path: { chat_id: chatId } });
-      const mode = (resp.data as { chat_mode?: string } | undefined)?.chat_mode ?? 'group';
-      modeCache.set(chatId, { mode, at: Date.now() });
-      // 容量保护：超过上限淘汰迭代头（Map 按插入序，头=最旧条目）
-      if (modeCache.size > MAX_CACHE_SIZE) {
-        const first = modeCache.keys().next();
-        if (first.value) modeCache.delete(first.value);
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const resp = await client.im.v1.chat.get({ path: { chat_id: chatId } });
+        const mode = (resp.data as { chat_mode?: string } | undefined)?.chat_mode;
+        if (!mode) throw new Error('chat.get 未返回 chat_mode');
+        if (mode !== 'group' && mode !== 'topic') {
+          throw new Error(`chat.get 返回未知 chat_mode: ${mode}`);
+        }
+        modeCache.set(chatId, { mode, at: Date.now() });
+        // 容量保护：超过上限淘汰迭代头（Map 按插入序，头=最旧条目）
+        if (modeCache.size > MAX_CACHE_SIZE) {
+          const first = modeCache.keys().next();
+          if (first.value) modeCache.delete(first.value);
+        }
+        return mode;
+      } catch (err) {
+        lastErr = err;
       }
-      return mode;
-    } catch (err) {
-      log().warn({ err, chatId }, 'chat_mode 查询失败，按普通群处理');
-      return 'group';
+      if (attempt < 2) await delay(100 * (attempt + 1));
     }
+    // 未知群模式时绝不能按普通群降级，否则话题首消息会串入个人 active 会话。
+    log().warn({ err: lastErr, chatId }, 'chat_mode 查询失败，拒绝降级到普通群');
+    throw lastErr instanceof Error ? lastErr : new Error('chat_mode 查询失败');
   }
 
   return {
     async resolve(chatId, messageId) {
       const mode = await chatMode(chatId);
       if (mode !== 'topic') return undefined;
-      try {
-        const resp = await client.im.v1.message.get({ path: { message_id: messageId } });
-        const items = (resp.data as { items?: Array<{ thread_id?: string }> } | undefined)?.items;
-        return items?.[0]?.thread_id || undefined;
-      } catch (err) {
-        log().warn({ err, chatId, messageId }, 'thread_id 补查失败');
-        return undefined;
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const resp = await client.im.v1.message.get({ path: { message_id: messageId } });
+          const items = (resp.data as { items?: Array<{ thread_id?: string }> } | undefined)?.items;
+          const threadId = items?.[0]?.thread_id;
+          if (threadId) return threadId;
+          lastErr = new Error('message.get 未返回 thread_id');
+        } catch (err) {
+          lastErr = err;
+        }
+        if (attempt < 2) await delay(100 * (attempt + 1));
       }
+      log().warn({ err: lastErr, chatId, messageId }, '话题群 thread_id 补查失败，拒绝降级到个人会话');
+      throw lastErr instanceof Error ? lastErr : new Error('话题群 thread_id 补查失败');
     },
     invalidate(chatId) {
       modeCache.delete(chatId);
     },
   };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

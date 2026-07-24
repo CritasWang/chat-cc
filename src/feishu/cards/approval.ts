@@ -6,6 +6,8 @@ export interface ApprovalCardSpec {
   toolName: string;
   toolInputPreview: string;
   threadKey: string;
+  requesterId: string;
+  chatId: string;
 }
 
 export function renderApprovalCard(s: ApprovalCardSpec): InteractiveCard {

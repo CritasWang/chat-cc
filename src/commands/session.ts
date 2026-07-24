@@ -1,17 +1,22 @@
-import { existsSync } from 'node:fs';
 import {
   DEFAULT_SLOT,
   normalizeSlot,
   parseThreadKey,
   threadKey,
+  isTopicThreadKey,
+  topicThreadKey,
+  SessionPoolCapacityError,
   type SessionPool,
 } from '../engine/pool.js';
 import { renderSessionListCard } from '../feishu/cards/session.js';
 import { card, cardHeader, md, hr, btnRow, cmdBtn, toastBtn, cmdBtnRefresh } from '../feishu/cards/base.js';
 import { senderKey, type CommandFn } from './types.js';
 import type { MessageMeta } from '../feishu/router.js';
-import type { Config } from '../config.js';
+import { replyOptions } from '../feishu/router.js';
+import { validateCwd, type Config } from '../config.js';
 import type { AgentKind } from '../agent/types.js';
+import { isPrivileged } from '../policy/owner.js';
+import { canAccessSession, currentSessionKey, listAccessibleSessions } from './session-context.js';
 
 /** 从参数中摘出 --codex / --claude 引擎标记 */
 export function extractAgentFlag(raw: string): { rest: string; agent?: AgentKind } {
@@ -65,7 +70,7 @@ function resolveTarget(
 ): { threadKey: string; slot: string } | undefined {
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
-  const scoped = pool.listByScope(meta.chatId, meta.senderId);
+  const scoped = listAccessibleSessions(meta, pool);
 
   // 序号（1-based）
   const asNum = Number(trimmed);
@@ -75,7 +80,7 @@ function resolveTarget(
   }
 
   // 完整 threadKey（包含冒号）
-  if (trimmed.includes(':') && pool.getMeta(trimmed)) {
+  if (trimmed.includes(':') && pool.getMeta(trimmed) && canAccessSession(meta, trimmed)) {
     return { threadKey: trimmed, slot: parseThreadKey(trimmed).slot };
   }
 
@@ -93,41 +98,100 @@ function uniqueSlot(wanted: string, taken: Set<string>): string {
   return `${wanted}-${i}`;
 }
 
-export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier }) => {
+export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier, apiProfiles }) => {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   const sub = (parts[0] ?? 'list').toLowerCase();
   const rest = parts.slice(1).join(' ');
   const userKey = senderKey(meta);
 
   if (sub === 'start') {
+    try {
     const { rest: noAgent, agent } = extractAgentFlag(rest);
     const { rest: cleaned, profile } = extractProfileFlag(noAgent);
-    const { cwd, slot: wanted, label } = parseStartArgs(cleaned, cfg);
+    const parsedStart = parseStartArgs(cleaned, cfg);
+    const checkedCwd = validateCwd(cfg, parsedStart.cwd);
+    if (!checkedCwd.ok) {
+      const reason = checkedCwd.reason === 'outside-allowed-roots'
+        ? '路径不在允许的工作目录根范围内'
+        : checkedCwd.reason === 'not-directory'
+          ? '目标不是目录'
+          : '路径不存在';
+      await replier.replyCard(
+        meta.messageId,
+        card(cardHeader('❌ 工作目录不可用', 'red'), [
+          md(`${reason}：\n\`${checkedCwd.cwd}\`\n\n请使用 default_cwd、projects 或 allowed_cwd_roots 下的目录。`),
+        ]),
+        replyOptions(meta),
+      );
+      return;
+    }
+    const cwd = checkedCwd.cwd;
+    const { slot: wanted, label } = parsedStart;
     const engineLabel = agent ?? cfg.agent;
+    if (agent === 'codex' && !isPrivileged(cfg, meta.senderId)) {
+      return '⛔ 显式切换 Codex 仅管理员可用';
+    }
+    if (profile && !isPrivileged(cfg, meta.senderId)) {
+      return '⛔ 指定 API profile 仅管理员可用';
+    }
+    if (profile && !apiProfiles?.get(profile)) {
+      const available = apiProfiles?.available()
+        ? `\n可用: ${apiProfiles.list().map((p) => p.name).join(', ')}`
+        : '（当前未配置 cc-profiles.zsh）';
+      return `❌ 未知 API profile: ${profile}${available}`;
+    }
+    if (profile && engineLabel === 'codex') {
+      return '❌ API profile 仅适用于 Claude 引擎，Codex 会话不支持 --profile';
+    }
     const startOpts = {
       ...(agent ? { agent } : {}),
       ...(profile ? { apiProfile: profile } : {}),
     };
 
-    // 校验工作目录是否存在
-    if (!existsSync(cwd)) {
+    // 话题群固定“一话题一会话”。/session start 必须操作当前 topic key，不能创建一个
+    // 后续普通消息永远不会命中的个人 slot 会话。
+    if (meta.threadId) {
+      if (/(^|\s)--name=\S+/.test(cleaned)) {
+        return '话题会话固定绑定当前话题，不支持 `--name` 多槽位';
+      }
+      const topicKey = topicThreadKey(meta.chatId, meta.threadId);
+      const existingMeta = pool.getMeta(topicKey);
+      const running = pool.get(topicKey);
+      const optsChanged = Boolean(
+        running && existingMeta &&
+        ((startOpts.agent !== undefined &&
+          startOpts.agent !== (existingMeta.sessionIdAgent ?? existingMeta.agent ?? cfg.agent)) ||
+         (startOpts.apiProfile !== undefined && startOpts.apiProfile !== existingMeta.apiProfile)),
+      );
+
+      let resetForCwd = false;
+      if (existingMeta?.cwd !== undefined && existingMeta.cwd !== cwd) {
+        resetForCwd = true;
+        const restarted = await pool.resetContext(topicKey, cwd, startOpts);
+        if (!restarted) return '❌ 话题会话在重建期间已被关闭，请重试';
+      } else if (optsChanged) {
+        await pool.restart(parseThreadKey(topicKey), cwd, startOpts);
+      } else {
+        pool.start(parseThreadKey(topicKey), cwd, startOpts);
+      }
+
       await replier.replyCard(
         meta.messageId,
-        card(cardHeader('❌ 路径不存在', 'red'), [
+        card(cardHeader(existingMeta ? '💬 话题会话已更新' : '✅ 话题会话已启动', 'green'), [
           md(
-            `指定的工作目录不存在：\n\`${cwd}\`\n\n` +
-              '请检查路径是否正确，或在 config.yaml 的 `projects` 中配置别名。\n\n' +
-              '**用法**：\n' +
-              '- `/session start @项目别名`（推荐，在 config.yaml 中预设）\n' +
-              '- `/session start <项目绝对路径>`\n\n' +
-              '*Windows 路径示例：`/session start D:/projects/demo`*',
+            `**范围**: 当前话题\n` +
+              `**项目**: \`${label}\`\n` +
+              `**cwd**: \`${cwd}\`\n` +
+              `**引擎**: \`${engineLabel}\`${profile ? `\n**API profile**: \`${profile}\`` : ''}` +
+              (resetForCwd ? '\n\n*工作目录已变化，旧对话上下文已清空*' : ''),
           ),
           hr(),
           btnRow([
-            cmdBtn('📂 查看项目', 'project', ''),
-            cmdBtnRefresh('📋 会话列表', 'session', 'list', 'session_list'),
+            toastBtn('💬 发消息', '直接在当前话题发送文字即可', 'primary'),
+            cmdBtnRefresh('📋 会话状态', 'session', 'list', 'session_list'),
           ]),
         ]),
+        replyOptions(meta),
       );
       return;
     }
@@ -144,7 +208,8 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
         // 直接激活 + 懒启动（如果已关闭）；本次指定的引擎/profile 会覆盖历史选择
         const sess = pool.get(sameSlotKey);
         const optsChanged = sess &&
-          ((startOpts.agent !== undefined && startOpts.agent !== existingMeta.agent) ||
+          ((startOpts.agent !== undefined &&
+            startOpts.agent !== (existingMeta.sessionIdAgent ?? existingMeta.agent ?? cfg.agent)) ||
            (startOpts.apiProfile !== undefined && startOpts.apiProfile !== existingMeta.apiProfile));
         if (optsChanged) {
           // 值与当前 meta 不同且会话正在运行：需先关闭旧进程再重启（Codex 需等 SIGTERM/SIGKILL）
@@ -170,6 +235,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
               cmdBtnRefresh('📋 会话列表', 'session', 'list', 'session_list'),
             ]),
           ]),
+          replyOptions(meta),
         );
         return;
       }
@@ -197,8 +263,15 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
         ]),
         md('*直接发消息即可对话，或使用 `/s <消息>` 显式发送*'),
       ]),
+      replyOptions(meta),
     );
-    return;
+      return;
+    } catch (err) {
+      if (err instanceof SessionPoolCapacityError) {
+        return `⏳ 活跃会话已达上限（${err.limit}），请先关闭不用的会话或等待空闲回收`;
+      }
+      throw err;
+    }
   }
 
   if (sub === 'switch' || sub === 'use') {
@@ -210,12 +283,19 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
     const tm = pool.getMeta(target.threadKey);
     if (tm && !pool.get(target.threadKey)) {
       const parsed = parseThreadKey(target.threadKey);
-      pool.start(
-        { chatId: parsed.chatId, senderId: parsed.senderId, slot: parsed.slot },
-        tm.cwd,
-      );
+      try {
+        pool.start(
+          { chatId: parsed.chatId, senderId: parsed.senderId, slot: parsed.slot },
+          tm.cwd,
+        );
+      } catch (err) {
+        if (err instanceof SessionPoolCapacityError) {
+          return `⏳ 活跃会话已达上限（${err.limit}），请先关闭不用的会话或等待空闲回收`;
+        }
+        throw err;
+      }
     } else {
-      pool.setActive(userKey, target.threadKey);
+      if (!isTopicThreadKey(target.threadKey)) pool.setActive(userKey, target.threadKey);
     }
 
     await replier.replyCard(
@@ -232,6 +312,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
           cmdBtnRefresh('📋 会话列表', 'session', 'list', 'session_list'),
         ]),
       ]),
+      replyOptions(meta),
     );
     return;
   }
@@ -240,23 +321,35 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
     const target = rest
       ? resolveTarget(pool, meta, rest)
       : (() => {
-          const act = pool.getOrResumeActive(userKey);
-          return act
-            ? { threadKey: act.threadKey, slot: parseThreadKey(act.threadKey).slot }
-            : undefined;
+          const key = currentSessionKey(meta, pool);
+          return key ? { threadKey: key, slot: parseThreadKey(key).slot } : undefined;
         })();
     if (!target) return '未指定且无当前会话';
-    const ok = await pool.stop(target.threadKey, { keepMeta: false });
+    const ok = await pool.stop(target.threadKey, { keepMeta: false, reason: 'destroy' });
     return ok ? `🛑 已停止会话 \`${target.slot}\`` : `会话不存在`;
   }
 
   if (sub === 'list') {
-    await replier.replyCard(meta.messageId, renderSessionListCard(pool, meta, userKey));
+    await replier.replyCard(meta.messageId, renderSessionListCard(pool, meta, userKey), replyOptions(meta));
     return;
   }
 
   if (sub === 'current') {
-    const sess = pool.getOrResumeActive(userKey);
+    const currentKey = currentSessionKey(meta, pool);
+    let sess = currentKey ? pool.get(currentKey) : undefined;
+    if (currentKey && !sess) {
+      const m = pool.getMeta(currentKey);
+      if (m) {
+        try {
+          sess = pool.start(parseThreadKey(currentKey), m.cwd);
+        } catch (err) {
+          if (err instanceof SessionPoolCapacityError) {
+            return `⏳ 活跃会话已达上限（${err.limit}），请先关闭不用的会话或等待空闲回收`;
+          }
+          throw err;
+        }
+      }
+    }
     if (!sess) {
       await replier.replyCard(
         meta.messageId,
@@ -268,6 +361,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
             cmdBtnRefresh('📋 会话列表', 'session', 'list', 'session_list'),
           ]),
         ]),
+        replyOptions(meta),
       );
       return;
     }
@@ -292,6 +386,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
           cmdBtnRefresh('📋 全部会话', 'session', 'list', 'session_list'),
         ]),
       ]),
+      replyOptions(meta),
     );
     return;
   }

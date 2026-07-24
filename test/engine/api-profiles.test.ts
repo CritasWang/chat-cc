@@ -104,6 +104,26 @@ describe('ApiProfileStore', () => {
     expect(store.list()).toHaveLength(1);
     expect(store.list()[0]?.name).toBe('only');
   });
+
+  it('reload 不保留新文件已移除的旧默认选择', () => {
+    const src = join(dir, 'cc-profiles.zsh');
+    writeFileSync(src, SAMPLE);
+    const store = new ApiProfileStore(src, join(dir, 'state.json'));
+    expect(store.current()?.name).toBe('timecho');
+
+    writeFileSync(src, 'CC_PROFILES=(\n timecho "sk-new|https://new.example"\n)\n');
+    store.reload();
+    expect(store.current()).toBeUndefined();
+  });
+
+  it('会话显式引用已删除 profile 时拒绝静默回落', () => {
+    const store = makeStore();
+    expect(() => store.envOverridesFor('ghost')).toThrow(/profile 不存在: ghost/);
+    expect(store.envOverridesFor()).toEqual({
+      ANTHROPIC_AUTH_TOKEN: 'sk-SUeMvBBB',
+      ANTHROPIC_BASE_URL: 'https://coding.example.com',
+    });
+  });
 });
 
 describe('maskToken', () => {

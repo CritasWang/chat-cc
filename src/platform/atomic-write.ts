@@ -7,7 +7,7 @@ import {
   openSync,
   renameSync,
   rmSync,
-  writeSync,
+  writeFileSync,
 } from 'node:fs';
 import { chmod, mkdir, open, rm, rename } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -56,7 +56,7 @@ export async function writeFileAtomic(
   opts: AtomicWriteOptions = {},
 ): Promise<void> {
   const mode = opts.mode ?? 0o600;
-  await mkdir(dirname(path), { recursive: true });
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = tmpPathOf(path);
   try {
     const handle = await open(tmp, 'w', mode);
@@ -86,13 +86,14 @@ export function writeFileAtomicSync(
   opts: AtomicWriteOptions = {},
 ): void {
   const mode = opts.mode ?? 0o600;
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = tmpPathOf(path);
   try {
     const fd = openSync(tmp, 'w', mode);
     try {
       const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
-      writeSync(fd, buf);
+      // writeSync 允许部分写入；writeFileSync(fd, ...) 会完整写完缓冲区。
+      writeFileSync(fd, buf);
       try {
         fsyncSync(fd);
       } catch (err) {

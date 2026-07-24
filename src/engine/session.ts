@@ -10,6 +10,8 @@ export interface SessionConfig {
   disallowedTools?: string[];
   permissionMode?: Options['permissionMode'];
   resumeId?: string;
+  /** 单轮无输出/未结束超时；超时 abort 当前 query，下条消息自动恢复。 */
+  turnTimeoutMs?: number;
   extraOptions?: Omit<
     Options,
     'cwd' | 'model' | 'allowedTools' | 'disallowedTools' | 'permissionMode' | 'resume'
@@ -61,12 +63,17 @@ export class Session {
   lastUsedAt = new Date();
   /** 已投递进当前 query 但尚未被 SDK result 确认的消息（仅 stale-resume 自愈时重放） */
   private pending: SDKUserMessage[] = [];
-  /** 一次性闸门：stale-resume 只自愈一次（新建会话无 resume，不会再 stale） */
-  private resumeRecovered = false;
+  /** 最近一次已确认失效的 resume ID；只阻止同一个坏 ID 无限自愈循环。 */
+  private rejectedResumeId?: string;
   /** close() 后置位：pump 停止分发事件，防止被替换的旧会话（僵尸）继续刷卡片/记账 */
   private closed = false;
   /** 泵异常退出后置位，下次 send() 触发自动恢复 */
   private pumpCrashed = false;
+  private abortController = new AbortController();
+  private turnTimer?: NodeJS.Timeout;
+  private timeoutError?: string;
+  /** 当前投递批次是否已经向上层发出 result；用于避免 query 收尾再补一条重复 error。 */
+  private terminalSinceLastSend = false;
 
   readonly cwd: string;
 
@@ -81,7 +88,28 @@ export class Session {
     this.started = true;
 
     this.q = query({ prompt: this.queue.stream(), options: this.buildOptions(true) });
-    this.pumpPromise = this.runLoop().catch((err) => this.handlePumpCrash(err));
+    this.launchPump();
+  }
+
+  private launchPump(): void {
+    this.pumpPromise = this.runLoop().then(
+      () => this.handlePumpEnd(),
+      (err) => this.handlePumpEnd(err),
+    );
+  }
+
+  private handlePumpEnd(err?: unknown): void {
+    if (this.closed) return;
+    if (this.terminalSinceLastSend) {
+      // Abort/SDK 收尾可能在 result 之后结束 async generator。该轮已经有终态，
+      // 这里只标记下次 send 重建 query，不能再制造第二张 error 卡。
+      if (err) log().warn({ err, thread: this.threadKey }, 'session pump 在终态后退出，等待下次发送恢复');
+      this.clearTurnTimer();
+      this.timeoutError = undefined;
+      this.pumpCrashed = true;
+      return;
+    }
+    this.handlePumpCrash(err ?? new Error(this.timeoutError ?? 'session pump 意外结束'));
   }
 
   /** 泵异常收敛：已 close 的会话静默，否则记日志 → 置位 pumpCrashed → 发 error 事件 */
@@ -90,10 +118,18 @@ export class Session {
     // 避免向已终结的直播卡片发送虚假 error 事件
     if (this.closed) return;
     log().error({ err, thread: this.threadKey }, 'session pump 异常退出');
+    this.clearTurnTimer();
     // 先置位再发事件：下游 onEvent 拿到 error 时 pumpCrashed 已为 true，
     // 后续 send() 能正确触发 recoverFromCrash()
     this.pumpCrashed = true;
-    void this.cfg.onEvent?.({ kind: 'error', message: String(err) });
+    const message = this.timeoutError ?? String(err);
+    this.timeoutError = undefined;
+    const reported = this.cfg.onEvent?.({ kind: 'error', message });
+    if (reported && typeof reported.then === 'function') {
+      void reported.catch((eventErr) =>
+        log().error({ err: eventErr, thread: this.threadKey }, 'session pump error 事件上报失败'),
+      );
+    }
   }
 
   private buildOptions(withResume: boolean): Options {
@@ -106,10 +142,12 @@ export class Session {
       ...(this.cfg.permissionMode ? { permissionMode: this.cfg.permissionMode } : {}),
       ...(withResume && resumeId ? { resume: resumeId } : {}),
       ...(this.cfg.extraOptions ?? {}),
+      abortController: this.abortController,
     };
   }
 
   send(text: string): void {
+    if (this.closed) throw new Error(`session ${this.threadKey} is closed`);
     this.lastUsedAt = new Date();
     if (this.pumpCrashed) {
       // 泵已崩溃：自动恢复（重建空 query，不重放 pending，上下文经 sessionId resume）
@@ -121,8 +159,10 @@ export class Session {
       message: { role: 'user', content: text },
       parent_tool_use_id: null,
     };
+    this.terminalSinceLastSend = false;
     this.queue.push(m);
     this.pending.push(m);
+    this.armTurnTimer();
   }
 
   async interrupt(): Promise<void> {
@@ -159,6 +199,7 @@ export class Session {
     const oldQueue = this.queue;
     const oldQ = this.q;
     this.queue = new MessageQueue();
+    this.abortController = new AbortController();
     const droppedCount = this.pending.length;
     this.pending = [];
 
@@ -167,9 +208,9 @@ export class Session {
 
     // 重建空 query（不重放 pending），每次 send 时 push 入队自然触发消费
     this.q = query({ prompt: this.queue.stream(), options: this.buildOptions(true) });
-    this.pumpPromise = this.runLoop().catch((err) => this.handlePumpCrash(err));
     this.pumpCrashed = false;
     this.started = true;
+    this.launchPump();
     log().warn({ thread: this.threadKey, sessionId: this.sessionId, droppedCount },
       '泵崩溃已恢复（pending 已丢弃，等待新消息）');
   }
@@ -177,6 +218,8 @@ export class Session {
   async close(timeoutMs = 5000): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.clearTurnTimer();
+    this.abortController.abort();
     this.queue.close();
     if (this.q) this.q.close();
     if (this.pumpPromise) {
@@ -221,13 +264,20 @@ export class Session {
             ev.ok === false &&
             this.sessionId &&
             ev.detail?.errors?.some((e) => e.includes('No conversation found with session ID')) &&
-            !this.resumeRecovered
+            this.rejectedResumeId !== this.sessionId
           ) {
             return 'recovered';
           }
           this.lastUsedAt = new Date();
           // 任意非 stale 的 result（无论 ok/error）：消息已被消费，清空重放缓冲
           if (ev.kind === 'result') {
+            if (this.timeoutError) {
+              ev.ok = false;
+              ev.text = this.timeoutError;
+            }
+            this.terminalSinceLastSend = true;
+            this.timeoutError = undefined;
+            this.clearTurnTimer();
             this.pending = [];
           }
           await this.cfg.onEvent?.(ev);
@@ -239,7 +289,7 @@ export class Session {
       // 用运行时 sessionId 判断：自愈后 sessionId 已置空，不会再误判。
       if (
         this.sessionId &&
-        !this.resumeRecovered &&
+        this.rejectedResumeId !== this.sessionId &&
         String(err).includes('No conversation found')
       ) {
         return 'recovered';
@@ -255,7 +305,7 @@ export class Session {
    */
   private rebuildWithoutResume(): void {
     const stale = this.sessionId;
-    this.resumeRecovered = true;
+    this.rejectedResumeId = stale;
     this.sessionId = undefined;
     this.lastUsedAt = new Date();
 
@@ -272,6 +322,27 @@ export class Session {
       { thread: this.threadKey, staleSessionId: stale },
       'resume 失效，已降级为新建会话并重放',
     );
-    this.cfg.onNotice?.({ text: '原会话上下文已过期，已新建会话继续', staleSessionId: stale });
+    try {
+      this.cfg.onNotice?.({ text: '原会话上下文已过期，已新建会话继续', staleSessionId: stale });
+    } catch (err) {
+      log().warn({ err, thread: this.threadKey }, 'resume 自愈通知失败');
+    }
+  }
+
+  private armTurnTimer(): void {
+    this.clearTurnTimer();
+    const timeoutMs = this.cfg.turnTimeoutMs ?? 0;
+    if (timeoutMs <= 0) return;
+    this.turnTimer = setTimeout(() => {
+      if (this.closed) return;
+      this.timeoutError = `会话响应超时（>${Math.ceil(timeoutMs / 60_000)} 分钟），已中断当前 query`;
+      this.abortController.abort(new Error(this.timeoutError));
+    }, timeoutMs);
+    this.turnTimer.unref?.();
+  }
+
+  private clearTurnTimer(): void {
+    if (this.turnTimer) clearTimeout(this.turnTimer);
+    this.turnTimer = undefined;
   }
 }

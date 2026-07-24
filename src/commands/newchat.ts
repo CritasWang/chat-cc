@@ -1,10 +1,12 @@
-import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolveCwd } from '../config.js';
+import { resolveCwd, validateCwd } from '../config.js';
 import { senderKey, type CommandFn } from './types.js';
 import { extractAgentFlag, extractProfileFlag } from './session.js';
 import { applyFeedTags } from '../feishu/feed-tag.js';
 import { card, cardHeader, md } from '../feishu/cards/base.js';
+import { isPrivileged } from '../policy/owner.js';
+import { SessionPoolCapacityError } from '../engine/pool.js';
+import { log } from '../logger.js';
 
 /**
  * /new [chat] [名字] [--codex|--claude] [--profile <name>]
@@ -19,6 +21,9 @@ import { card, cardHeader, md } from '../feishu/cards/base.js';
  * - `/new`（无参数）：等价于清空当前会话重新开始（提示用 /session start）
  */
 export const newCommand: CommandFn = async (args, meta, { cfg, pool, replier, apiProfiles }) => {
+  if (!isPrivileged(cfg, meta.senderId)) {
+    return '⛔ 创建新群仅管理员可用（config `admin_users`）';
+  }
   const { rest: noAgent, agent } = extractAgentFlag(args.trim());
   const { rest: noProfile, profile } = extractProfileFlag(noAgent);
   let isTopic = false;
@@ -38,29 +43,45 @@ export const newCommand: CommandFn = async (args, meta, { cfg, pool, replier, ap
 
   let topic = trimmed.slice(4).trim();
   const engine = agent ?? cfg.agent;
+  if (profile && engine === 'codex') {
+    return '❌ API profile 仅适用于 Claude 引擎，Codex 会话不支持 --profile';
+  }
 
   // @别名 或 直接路径 显式指定项目目录（从群名参数里摘出）
   let explicitCwd: string | undefined;
   const { rest: topicRest, target: cwdToken } = extractCwdTarget(topic);
   if (cwdToken) {
     const resolved = resolveCwd(cfg, cwdToken.startsWith('~/') ? cwdToken.replace('~', homedir()) : cwdToken);
-    if (!existsSync(resolved)) {
-      return `❌ 项目路径不存在: \`${resolved}\`（/project 查看可用别名）`;
+    const checked = validateCwd(cfg, resolved);
+    if (!checked.ok) {
+      const reason = checked.reason === 'outside-allowed-roots'
+        ? '项目路径不在允许根目录内'
+        : checked.reason === 'not-directory' ? '目标不是目录' : '项目路径不存在';
+      return `❌ ${reason}: \`${checked.cwd}\`（/project 查看可用别名）`;
     }
-    explicitCwd = resolved;
+    explicitCwd = checked.cwd;
     topic = topicRest;
   }
 
   // cwd 优先级：@别名/路径显式指定 > 继承发送者当前活跃会话 > default_cwd
   const activeTk = pool.activeThreadKeyOf(senderKey(meta));
   const inheritedCwd = activeTk ? pool.getMeta(activeTk)?.cwd : undefined;
-  const cwd = explicitCwd ?? inheritedCwd ?? cfg.default_cwd;
+  const inherited = explicitCwd ?? inheritedCwd ?? cfg.default_cwd;
+  const checkedCwd = validateCwd(cfg, inherited);
+  if (!checkedCwd.ok) return `❌ 工作目录不可用: \`${checkedCwd.cwd}\``;
+  const cwd = checkedCwd.cwd;
   const cwdSource = explicitCwd ? '指定' : inheritedCwd ? '继承自当前活跃会话' : '默认目录';
 
   // 群名：显式名字 > 显式指定了目录时用「项目名 · 引擎」（与 /cd 重命名格式一致）> 「引擎 · 时间」
   const engineName = engine === 'codex' ? 'Codex' : 'Claude';
   const project = cwd.split('/').filter(Boolean).pop() ?? '';
   const name = topic || (explicitCwd && project ? `${project} · ${engineName}` : defaultChatName(engineName));
+
+  // 建群是外部副作用，先做容量预检，避免已知无法启动会话时仍留下空群。
+  // createChat() 期间容量仍可能被其他请求占用，因此 start() 后还需再捕获一次。
+  if (!pool.hasStartCapacity()) {
+    return `⏳ 活跃会话已达上限（${cfg.max_active_sessions}），请先关闭不用的会话再建群`;
+  }
 
   const chatId = await replier.createChat({
     name,
@@ -72,14 +93,32 @@ export const newCommand: CommandFn = async (args, meta, { cfg, pool, replier, ap
 
   // 预开 default 会话：普通群直接用；话题群里它是「设置锚点」——
   // 每个话题的新会话从它继承 cwd/引擎/profile（话题消息不会路由进它）
-  pool.start(
-    { chatId, senderId: meta.senderId, slot: 'default' },
-    cwd,
-    {
-      ...(agent ? { agent } : {}),
-      ...(profile ? { apiProfile: profile } : {}),
-    },
-  );
+  try {
+    pool.start(
+      { chatId, senderId: meta.senderId, slot: 'default' },
+      cwd,
+      {
+        ...(agent ? { agent } : {}),
+        ...(profile ? { apiProfile: profile } : {}),
+      },
+    );
+  } catch (err) {
+    const capacity = err instanceof SessionPoolCapacityError;
+    log().error({ err, chatId, cwd, engine }, '新群已创建但会话启动失败');
+    await replier.sendCard(
+      chatId,
+      card(cardHeader('⚠️ 会话尚未启动', 'orange'), [
+        md(
+          capacity
+            ? `活跃会话已达上限（${err.limit}）。请先关闭不用的会话，再在本群执行 \`/session start\`。`
+            : '群已创建，但 Agent 会话启动失败。请检查 `chat-cc logs`，修复后在本群执行 `/session start`。',
+        ),
+      ]),
+    );
+    return capacity
+      ? `⚠️ 群「${name}」已创建，但容量在建群期间已被占满（上限 ${err.limit}），会话尚未启动`
+      : `⚠️ 群「${name}」已创建，但会话启动失败，请查看 chat-cc 日志`;
+  }
 
   // 自动打会话标签（feed 标签：ai + cc / ai + codex 两个独立标签）— best-effort，失败不影响建群
   const tagNames = engine === 'codex' ? cfg.new_chat_tags_codex : cfg.new_chat_tags_claude;

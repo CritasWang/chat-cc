@@ -15,6 +15,10 @@ export function pidPath(): string {
   return join(chatccHome(), 'chat-cc.pid');
 }
 
+export function daemonLockPath(): string {
+  return join(chatccHome(), 'chat-cc.lock');
+}
+
 export function logPath(): string {
   return join(chatccHome(), 'chat-cc.log');
 }
@@ -30,4 +34,8 @@ export function mediaDir(): string {
 
 export function callbackNoncesPath(): string {
   return join(chatccHome(), 'callback-nonces.json');
+}
+
+export function messageReceiptsPath(): string {
+  return join(chatccHome(), 'message-receipts.json');
 }
