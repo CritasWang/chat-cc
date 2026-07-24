@@ -8,6 +8,8 @@ export interface MessageMeta {
   chatType: string;
   senderId: string;
   mentionBot: boolean;
+  /** 话题群消息所属话题 id（omt_…）；普通群/单聊消息为空 */
+  threadId?: string;
 }
 
 interface RegisteredCommand {

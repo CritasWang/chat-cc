@@ -58,7 +58,7 @@ export async function runConfigCmd(args: string[]): Promise<void> {
       'app_id', 'app_secret', 'allowed_users', 'allowed_chats',
       'default_cwd', 'projects', 'claude_allowed_tools', 'claude_danger_mode',
       'claude_ask_timeout_min', 'claude_session_timeout_min', 'max_chunk_size',
-      'shell_whitelist', 'notify_chat_id', 'status_push_interval_min',
+      'shell_whitelist', 'notify_chat_id', 'notify_quiet_minutes', 'notify_done_ping', 'status_push_interval_min',
       'status_push_chat_id', 'stream_throttle_ms', 'persistence_dir',
       'idle_timeout_minutes', 'idle_check_seconds', 'approval_timeout_ms',
       'auto_approve_tools', 'mcp_feishu_rate_limit_ms', 'log_level',

@@ -1,11 +1,16 @@
 import { existsSync } from 'node:fs';
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 import { log } from '../logger.js';
-import { previewJson } from '../utils.js';
 import { resolveCwd } from '../config.js';
 import { buildCanUseTool } from '../engine/hooks.js';
 import { translateSdkMessage } from '../engine/events.js';
-import { renderLiveCard, type LiveCardState } from '../feishu/cards/live.js';
+import {
+  applyEvent,
+  closeStreamingText,
+  fullText,
+  initialLiveState,
+  renderLiveCard,
+} from '../feishu/cards/live.js';
 import type { CommandFn } from './types.js';
 
 /** 活跃的 /ask 查询，支持外部中断 */
@@ -24,7 +29,7 @@ export function interruptAsk(key: string): boolean {
  * 无状态单次提问 — 每次起一个独立 query，不保留上下文。
  * 用流式卡片即时反馈（立刻发占位卡片，SDK 事件到来时节流 patch）。
  */
-export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate }, extra) => {
+export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate, apiProfiles }, extra) => {
   const trimmed = args.trim();
   if (!trimmed) return '用法: /ask [@项目别名] <问题>';
 
@@ -44,15 +49,11 @@ export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate }, 
     return `❌ 路径不存在: \`${cwd}\`\n请检查路径或项目别名是否正确。`;
   }
 
-  const state: LiveCardState = {
-    threadKey: `ask:${meta.senderId || meta.chatId}`,
-    assistantBuf: '',
-    toolResults: 0,
-    phase: 'streaming',
+  const state = initialLiveState(`ask:${meta.senderId || meta.chatId}`, {
     stateless: true,
     cwd,
     ...(extra?.fallbackFromNoSession ? { fallbackFromNoSession: true } : {}),
-  };
+  });
 
   const placeholderMid = await replier.replyCard(meta.messageId, renderLiveCard(state));
   if (!placeholderMid) {
@@ -85,11 +86,16 @@ export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate }, 
     }, delay);
   };
 
+  const envOverrides = apiProfiles?.envOverrides() ?? {};
   const options: Options = {
     cwd,
     allowedTools: cfg.claude_allowed_tools,
     persistSession: false,
     thinking: { type: 'adaptive' },
+    // SDK env 为整体替换，必须 spread process.env
+    ...(Object.keys(envOverrides).length > 0
+      ? { env: { ...(process.env as Record<string, string>), ...envOverrides } }
+      : {}),
     ...(cfg.claude_danger_mode
       ? { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }
       : {
@@ -118,26 +124,20 @@ export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate }, 
         return placeholderMid ? undefined : `⏱ /ask 超时，已中断`;
       }
       for (const ev of translateSdkMessage(msg)) {
-        if (ev.kind === 'assistant-text') {
-          state.assistantBuf += ev.text;
-          schedule();
-        } else if (ev.kind === 'tool-use') {
-          state.currentTool = { name: ev.name, input: previewJson(ev.input) };
-          schedule();
-        } else if (ev.kind === 'tool-result') {
-          state.currentTool = undefined;
-          state.toolResults += 1;
+        if (ev.kind === 'assistant-text' || ev.kind === 'tool-use' || ev.kind === 'tool-result') {
+          applyEvent(state, ev);
           schedule();
         } else if (ev.kind === 'result') {
           state.phase = ev.ok ? 'done' : 'error';
           if (!ev.ok) state.error = ev.text || '执行失败';
           state.usage = ev.usage;
           state.durationMs = ev.durationMs;
+          closeStreamingText(state);
           flush();
           await patchChain;
           if (placeholderMid) return;
           return ev.ok
-            ? state.assistantBuf.trim() || ev.text || '(空结果)'
+            ? fullText(state).trim() || ev.text || '(空结果)'
             : `/ask 失败: ${ev.text || '未知错误'}`;
         }
       }
@@ -145,10 +145,11 @@ export const askCommand: CommandFn = async (args, meta, { cfg, replier, gate }, 
 
     if (state.phase === 'streaming') {
       state.phase = 'done';
+      closeStreamingText(state);
       flush();
       await patchChain;
     }
-    return placeholderMid ? undefined : state.assistantBuf.trim() || '(空结果)';
+    return placeholderMid ? undefined : fullText(state).trim() || '(空结果)';
   } catch (err) {
     log().error({ err }, '/ask 失败');
     state.phase = 'error';

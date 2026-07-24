@@ -53,6 +53,14 @@ hook_port: 9876
 # 默认通知目标（Claude Code hooks 不指定 chat_id 时发送到此聊天）
 notify_chat_id: ""
 
+# 完成通知安静阈值（分钟）：turn 完成时仅当源群距用户上次发消息超过此时长才推送
+# （前台快速对话不打扰；通知群自身的 turn 永不推送）；0 = 总是推送
+notify_quiet_minutes: 2
+
+# 后台会话完成时在源群补发一条轻量提示（true/false）
+# 流式卡片是原地更新（PATCH），不产生未读红点；补发的新消息才会让群聊亮红点
+notify_done_ping: true
+
 # 定时状态推送
 status_push_interval: 180            # 推送间隔（分钟），0 则禁用（默认 180，即 3 小时）
 status_push_chat_id: ""              # 推送目标群聊，为空则用 notify_chat_id

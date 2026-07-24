@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Config } from '../../config.js';
-import type { SessionPool } from '../../engine/pool.js';
+import { parseThreadKey, type SessionPool } from '../../engine/pool.js';
 import type { InteractiveCard } from '../replier.js';
 import { btnRow, card, cardHeader, cmdBtn, cmdBtnRefresh, hr, md } from './base.js';
 
@@ -42,7 +42,14 @@ function formatUptime(seconds: number): string {
   return parts.join('');
 }
 
-export function renderStatusCard(cfg: Config, pool: SessionPool, configPath?: string): InteractiveCard {
+export function renderStatusCard(
+  cfg: Config,
+  pool: SessionPool,
+  configPath?: string,
+  apiProfile?: { name: string; baseUrl: string },
+  /** chatId → 群名（异步预解析后传入；缺省回落显示 threadKey） */
+  chatNames?: Map<string, string>,
+): InteractiveCard {
   const sessions = pool.list();
   const activeCount = sessions.filter((s) => s.active).length;
   const vi = getVersionInfo();
@@ -53,15 +60,31 @@ export function renderStatusCard(cfg: Config, pool: SessionPool, configPath?: st
   sysLines.push(`进程运行: \`${formatUptime(process.uptime())}\``);
   if (configPath) sysLines.push(`配置: \`${configPath}\``);
   sysLines.push(`默认目录: \`${cfg.default_cwd}\``);
+  if (apiProfile) sysLines.push(`API profile: **${apiProfile.name}** · \`${apiProfile.baseUrl}\``);
 
-  let sessionMd = '*(无活跃会话)*';
-  if (sessions.length > 0) {
-    const lines = sessions.map((s) => {
+  // 会话区：群名 + slot + 项目 + 引擎，一行一会话，附关闭按钮
+  const sessionElems: unknown[] = [];
+  if (sessions.length === 0) {
+    sessionElems.push(md('*(无会话)*'));
+  } else {
+    for (const s of sessions) {
+      const parsed = parseThreadKey(s.threadKey);
+      const m = pool.getMeta(s.threadKey);
       const marker = s.active ? '🟢' : '⚪';
-      const sid = s.sessionId ? s.sessionId.slice(0, 8) : '-';
-      return `${marker} \`${s.threadKey}\` · sid \`${sid}\` · cwd \`${s.cwd}\``;
-    });
-    sessionMd = lines.join('\n');
+      const chatName = chatNames?.get(parsed.chatId) ?? `…${parsed.chatId.slice(-6)}`;
+      const slotSuffix = parsed.slot === 'default' ? '' : ` · \`${parsed.slot}\``;
+      const project = s.cwd.split('/').filter(Boolean).pop() ?? s.cwd;
+      const engine = m?.agent ?? cfg.agent;
+      const dangerMark = (m?.danger ?? cfg.claude_danger_mode) ? ' · ⚠️danger' : '';
+      sessionElems.push(
+        md(`${marker} **${chatName}**${slotSuffix}\n　📁 ${project} · ${engine}${dangerMark} · \`${s.cwd}\``),
+      );
+      sessionElems.push(
+        btnRow([
+          cmdBtnRefresh('⏹ 关闭该会话', 'session', `stop ${s.threadKey}`, 'status', 'danger'),
+        ]),
+      );
+    }
   }
 
   const dangerStatus = cfg.claude_danger_mode
@@ -73,7 +96,8 @@ export function renderStatusCard(cfg: Config, pool: SessionPool, configPath?: st
   return card(cardHeader('📊 系统状态', 'indigo'), [
     md(sysLines.join('\n')),
     hr(),
-    md(`**🔄 会话 (${activeCount} 活跃 / ${sessions.length} 总)**\n${sessionMd}`),
+    md(`**🔄 会话 (${activeCount} 活跃 / ${sessions.length} 总)**`),
+    ...sessionElems,
     hr(),
     md(dangerStatus),
     hr(),

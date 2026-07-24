@@ -1,6 +1,6 @@
 {
   "name": "chat-cc",
-  "version": "3.1.2",
+  "version": "4.0.0",
   "description": "飞书 ↔ Claude Code 网关 — Lark Bot 一键接入 Claude Code",
   "type": "module",
   "engines": {
@@ -37,7 +37,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.161",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.202",
     "@larksuiteoapi/node-sdk": "^1.66.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "pino": "^10.3.1",

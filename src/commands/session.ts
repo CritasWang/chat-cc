@@ -11,6 +11,31 @@ import { card, cardHeader, md, hr, btnRow, cmdBtn, toastBtn, cmdBtnRefresh } fro
 import { senderKey, type CommandFn } from './types.js';
 import type { MessageMeta } from '../feishu/router.js';
 import type { Config } from '../config.js';
+import type { AgentKind } from '../agent/types.js';
+
+/** 从参数中摘出 --codex / --claude 引擎标记 */
+export function extractAgentFlag(raw: string): { rest: string; agent?: AgentKind } {
+  let agent: AgentKind | undefined;
+  const rest = raw
+    .replace(/(^|\s)--(codex|claude)(?=\s|$)/g, (_m, _pre, name: string) => {
+      agent = name as AgentKind;
+      return ' ';
+    })
+    .trim();
+  return { rest, ...(agent ? { agent } : {}) };
+}
+
+/** 从参数中摘出 --profile <name> / --profile=<name> API profile 标记 */
+export function extractProfileFlag(raw: string): { rest: string; profile?: string } {
+  let profile: string | undefined;
+  const rest = raw
+    .replace(/(^|\s)--profile[= ]([A-Za-z0-9_.-]+)(?=\s|$)/g, (_m, _pre, name: string) => {
+      profile = name;
+      return ' ';
+    })
+    .trim();
+  return { rest, ...(profile ? { profile } : {}) };
+}
 
 /** 解析 start 参数 -> { cwd, slot, label } */
 function parseStartArgs(rest: string, cfg: Config): { cwd: string; slot: string; label: string } {
@@ -75,7 +100,14 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
   const userKey = senderKey(meta);
 
   if (sub === 'start') {
-    const { cwd, slot: wanted, label } = parseStartArgs(rest, cfg);
+    const { rest: noAgent, agent } = extractAgentFlag(rest);
+    const { rest: cleaned, profile } = extractProfileFlag(noAgent);
+    const { cwd, slot: wanted, label } = parseStartArgs(cleaned, cfg);
+    const engineLabel = agent ?? cfg.agent;
+    const startOpts = {
+      ...(agent ? { agent } : {}),
+      ...(profile ? { apiProfile: profile } : {}),
+    };
 
     // 校验工作目录是否存在
     if (!existsSync(cwd)) {
@@ -109,8 +141,12 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
     let finalSlot = wanted;
     if (existingMeta) {
       if (existingMeta.cwd === cwd) {
-        // 直接激活 + 懒启动（如果已关闭）
-        pool.start({ chatId: meta.chatId, senderId: meta.senderId, slot: wanted }, cwd);
+        // 直接激活 + 懒启动（如果已关闭）；本次指定的引擎/profile 会覆盖历史选择
+        pool.start(
+          { chatId: meta.chatId, senderId: meta.senderId, slot: wanted },
+          cwd,
+          startOpts,
+        );
         await replier.replyCard(
           meta.messageId,
           card(cardHeader('💬 已激活已有会话', 'wathet'), [
@@ -127,14 +163,19 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
       finalSlot = uniqueSlot(wanted, taken);
     }
 
-    pool.start({ chatId: meta.chatId, senderId: meta.senderId, slot: finalSlot }, cwd);
+    pool.start(
+      { chatId: meta.chatId, senderId: meta.senderId, slot: finalSlot },
+      cwd,
+      startOpts,
+    );
     await replier.replyCard(
       meta.messageId,
       card(cardHeader('✅ 会话已启动', 'green'), [
         md(
           `**项目**: \`${label}\`\n` +
             `**slot**: \`${finalSlot}\`${finalSlot !== wanted ? `（原 \`${wanted}\` 已被占用，自动追加编号）` : ''}\n` +
-            `**cwd**: \`${cwd}\``,
+            `**cwd**: \`${cwd}\`\n` +
+            `**引擎**: \`${engineLabel}\`${profile ? `\n**API profile**: \`${profile}\`` : ''}`,
         ),
         hr(),
         btnRow([
@@ -226,6 +267,9 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
         md(
           `**slot**: \`${slot}\`\n` +
             `**cwd**: \`${m?.cwd ?? sess.cwd}\`\n` +
+            `**引擎**: \`${m?.agent ?? cfg.agent}\`\n` +
+            `**API profile**: \`${m?.apiProfile ?? '（跟随全局）'}\`\n` +
+            `**权限**: \`${m?.danger === undefined ? '（跟随全局）' : m.danger ? 'danger' : '审批'}\`\n` +
             `**sid**: \`${sid}\``,
         ),
         hr(),

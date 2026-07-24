@@ -1,12 +1,19 @@
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { UsageSnapshot } from './events.js';
+import { writeFileAtomicSync } from '../platform/atomic-write.js';
 import { log } from '../logger.js';
 
 export interface PersistedSession {
   threadKey: string;
   sessionId?: string;
   cwd: string;
+  /** 会话级引擎（用户显式指定时记录；缺省跟随全局配置） */
+  agent?: 'claude' | 'codex';
+  /** 会话级 API profile（用户显式指定时记录；缺省跟随全局当前） */
+  apiProfile?: string;
+  /** 会话级权限模式覆盖（缺省跟随全局 claude_danger_mode） */
+  danger?: boolean;
   createdAt: string;
   lastUsedAt: string;
   cost: UsageSnapshot;
@@ -21,7 +28,7 @@ export class Persistence {
 
   save(s: PersistedSession): void {
     try {
-      writeFileSync(this.pathOf(s.threadKey), JSON.stringify(s, null, 2), 'utf8');
+      writeFileAtomicSync(this.pathOf(s.threadKey), JSON.stringify(s, null, 2));
     } catch (err) {
       log().error({ err, threadKey: s.threadKey }, 'persist 会话失败');
     }

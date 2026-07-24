@@ -65,6 +65,8 @@ export class Session {
   private trackingPending: boolean;
   /** 一次性闸门：stale-resume 只自愈一次（新建会话无 resume，不会再 stale） */
   private resumeRecovered = false;
+  /** close() 后置位：pump 停止分发事件，防止被替换的旧会话（僵尸）继续刷卡片/记账 */
+  private closed = false;
 
   readonly cwd: string;
 
@@ -81,6 +83,9 @@ export class Session {
 
     this.q = query({ prompt: this.queue.stream(), options: this.buildOptions(true) });
     this.pumpPromise = this.runLoop().catch((err) => {
+      // 已 close 的会话（如 /danger 重启后被替换的旧实例）的 pump 收尾异常不再上报，
+      // 避免向已终结的直播卡片发送虚假 error 事件
+      if (this.closed) return;
       log().error({ err, thread: this.threadKey }, 'session pump 异常退出');
       void this.cfg.onEvent?.({ kind: 'error', message: String(err) });
     });
@@ -111,10 +116,33 @@ export class Session {
   }
 
   async interrupt(): Promise<void> {
-    if (this.q) await this.q.interrupt();
+    if (this.q && !this.closed) await this.q.interrupt();
+  }
+
+  /**
+   * 在线切换权限模式（SDK setPermissionMode 控制请求），不打断运行中的任务。
+   * 依赖创建时始终安装 canUseTool + allowDangerouslySkipPermissions（见 main.ts 会话工厂），
+   * 因此开/关两个方向均可在线切换。
+   * @returns true 切换成功；false 表示无法在线切换（未启动/已关闭/SDK 不支持或报错），
+   *          调用方（pool.setSessionDanger）应回退为重启生效。
+   */
+  async setDanger(danger: boolean): Promise<boolean> {
+    if (!this.started || !this.q || this.closed) return false;
+    const mode = danger ? ('bypassPermissions' as const) : ('default' as const);
+    try {
+      await this.q.setPermissionMode(mode);
+      // 记入 cfg：stale-resume 自愈重建（rebuildWithoutResume → buildOptions）时保持当前模式
+      this.cfg.permissionMode = mode;
+      return true;
+    } catch (err) {
+      log().warn({ err, thread: this.threadKey, danger }, 'setPermissionMode 在线切换失败，回退重启生效');
+      return false;
+    }
   }
 
   async close(timeoutMs = 5000): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
     this.queue.close();
     if (this.q) this.q.close();
     if (this.pumpPromise) {
@@ -129,7 +157,7 @@ export class Session {
   private async runLoop(): Promise<void> {
     while (true) {
       const action = await this.pumpOnce();
-      if (action === 'recovered') {
+      if (action === 'recovered' && !this.closed) {
         this.rebuildWithoutResume();
         continue;
       }
@@ -142,7 +170,13 @@ export class Session {
     if (!this.q) return 'done';
     try {
       for await (const msg of this.q) {
+        // close() 后不再分发：旧 query 的 5s 收尾竞速超时后若仍在产出（僵尸），
+        // 其事件不得再触达 streamer/cost（会刷已终结的卡片、重复记账）
+        if (this.closed) return 'done';
         for (const ev of translateSdkMessage(msg)) {
+          // 同一条 SDK 消息可产出多个事件（text + tool_use 等），await onEvent 期间
+          // 可能被并发 close() —— 事件粒度再查一次，保证 closed 后一个事件都不漏出
+          if (this.closed) return 'done';
           if (ev.kind === 'init' && !this.sessionId) this.sessionId = ev.sessionId;
           // stale-resume 拦截：原会话上下文已不存在。不转发该错误 result，直接退出
           // for-await（自动触发旧 query .return() 干净中断），交由 runLoop 重建为新会话。

@@ -2,6 +2,9 @@ import { log } from '../logger.js';
 import type { Router } from './router.js';
 import type { CommandDeps } from '../commands/types.js';
 import { parseThreadKey, normalizeSlot } from '../engine/pool.js';
+import type { CallbackStore } from './callback-store.js';
+import { getAskCard, removeAskCard } from './ask-store.js';
+import { renderAskUserCard, composeAnswer } from './cards/ask-user.js';
 
 /**
  * 卡片按钮回调分发。
@@ -21,7 +24,9 @@ export interface CardActionDeps {
   deps: CommandDeps;
   approvalResolver: (requestId: string, decision: 'allow' | 'deny') => boolean;
   isAllowed: (senderId: string, chatId: string) => boolean;
-  renderRefreshCard?: (refresh: string, chatId: string, senderId: string) => unknown | undefined;
+  renderRefreshCard?: (refresh: string, chatId: string, senderId: string) => unknown | Promise<unknown>;
+  /** 回调防重放（可选注入，缺省不启用） */
+  callbackStore?: CallbackStore;
 }
 
 interface CardActionPayload {
@@ -69,6 +74,26 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
   const refresh = typeof value['refresh'] === 'string' ? value['refresh'] : undefined;
   const messageId = ev.open_message_id ?? ev.context?.open_message_id ?? '';
 
+  // 所有按钮点击（中断/审批/切换等）统一留痕，排障时可对照消息日志还原操作序列
+  log().info({ cmd, args, senderId, chatId, messageId }, '收到卡片回调');
+
+  // 防重放：
+  // 1. 一次性 nonce（按钮 value 显式携带时）— 永久防重复
+  const nonce = typeof value['nonce'] === 'string' ? value['nonce'] : undefined;
+  if (nonce && d.callbackStore && !d.callbackStore.consume(nonce)) {
+    log().info({ nonce, cmd }, '卡片回调 nonce 已消费，拒绝重放');
+    return toast('warning', '该操作已执行过');
+  }
+  // 2. 短窗口去重 — 防双击（审批走 gate 自身的 one-shot resolve，不需要）
+  // __ask 点选是幂等的状态切换（多选需快速连点切换），不做短窗口去重；提交由 submitted 标志防重
+  if (!nonce && cmd !== '__approve' && cmd !== '__ask' && d.callbackStore) {
+    const dedupeKey = `${messageId}:${cmd}:${args}`;
+    if (!d.callbackStore.dedupe(dedupeKey)) {
+      log().info({ cmd, args, messageId }, '卡片回调短窗口重复，忽略');
+      return toast('info', '处理中…');
+    }
+  }
+
   if (cmd === '__approve') {
     const decision = value['decision'] === 'deny' ? 'deny' : 'allow';
     const ok = d.approvalResolver(args, decision);
@@ -76,6 +101,11 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
       ok ? (decision === 'allow' ? 'success' : 'warning') : 'error',
       ok ? (decision === 'allow' ? '✅ 已允许' : '❌ 已拒绝') : '审批已过期',
     );
+  }
+
+  // AskUserQuestion 提问卡：点选原地反馈，答完自动/手动提交
+  if (cmd === '__ask') {
+    return await handleAskAction(messageId, args, d);
   }
 
   if (!cmd) return toast('info', echo ?? '✓');
@@ -87,9 +117,15 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
       const isStop = args.startsWith('stop');
       const target = args.replace(/^(stop|switch)\s*/, '').trim();
       if (target) {
-        const scoped = d.deps.pool.listByScope(chatId, senderId);
-        const slot = normalizeSlot(target);
-        const hit = scoped.find((s) => parseThreadKey(s.threadKey).slot === slot);
+        // 优先按完整 threadKey 匹配（status 卡的关闭按钮可指向任意群的会话），
+        // 否则按本群 slot 名解析
+        let hit: { threadKey: string } | undefined =
+          target.includes(':') && d.deps.pool.getMeta(target) ? { threadKey: target } : undefined;
+        if (!hit) {
+          const scoped = d.deps.pool.listByScope(chatId, senderId);
+          const slot = normalizeSlot(target);
+          hit = scoped.find((s) => parseThreadKey(s.threadKey).slot === slot);
+        }
         if (hit) {
           if (isStop) {
             await d.deps.pool.stop(hit.threadKey, { keepMeta: false });
@@ -103,14 +139,14 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
                 meta.cwd,
               );
             } else {
-              const userKey = senderId || chatId;
+              const userKey = `${chatId}|${senderId || chatId}`;
               d.deps.pool.setActive(userKey, hit.threadKey);
             }
           }
         }
       }
     }
-    const refreshedCard = d.renderRefreshCard(refresh, chatId, senderId);
+    const refreshedCard = await d.renderRefreshCard(refresh, chatId, senderId);
     if (refreshedCard) {
       return { toast: { type: 'success', content: echo ?? '✓' }, card: { type: 'raw', data: refreshedCard } };
     }
@@ -126,6 +162,86 @@ async function dispatch(ev: CardActionPayload, d: CardActionDeps): Promise<Toast
   });
 
   return toast('success', echo ?? '✓');
+}
+
+/**
+ * 提问卡片点选处理：
+ * - `qIdx:optIdx`：单选题选中即答（同题再点换选）；多选题点选切换
+ * - `submit`：手动提交（有多选题时出现提交按钮）
+ * 全部题目答完（且无多选题）自动提交 —— 提交 = 汇总答案发给会话 +
+ * 卡片 PATCH 为终态（绿头「已回答」），用户明确知道操作已完成。
+ */
+async function handleAskAction(
+  messageId: string,
+  args: string,
+  d: CardActionDeps,
+): Promise<ToastResponse> {
+  const state = messageId ? getAskCard(messageId) : undefined;
+  if (!state) {
+    return toast('warning', '该提问已失效（服务重启过），请直接发消息回答');
+  }
+  if (state.submitted) return toast('info', '已提交过，无需重复操作');
+
+  if (args !== 'submit') {
+    const [qiRaw, oiRaw] = args.split(':');
+    const qi = Number(qiRaw);
+    const oi = Number(oiRaw);
+    const q = state.questions[qi];
+    if (!q || !q.options[oi]) return toast('error', '选项无效');
+
+    const sel = state.selections[qi]!;
+    if (q.multiSelect) {
+      // 多选：切换
+      const at = sel.indexOf(oi);
+      if (at >= 0) sel.splice(at, 1);
+      else sel.push(oi);
+    } else {
+      // 单选：替换
+      state.selections[qi] = [oi];
+    }
+
+    // 中间态：PATCH 卡片反馈已选；提交始终由用户点「提交回答」显式触发
+    await d.deps.replier.patchCard(messageId, renderAskUserCard(state));
+    const remaining = state.questions.length - state.selections.filter((x) => x.length > 0).length;
+    return toast(
+      'success',
+      remaining > 0 ? `已选 · 还剩 ${remaining} 题` : '已选好，点「提交回答」发送',
+    );
+  }
+
+  // 手动提交
+  if (state.selections.every((x) => x.length === 0)) {
+    return toast('warning', '还没有选择任何选项');
+  }
+  return await submitAsk(messageId, state, d);
+}
+
+async function submitAsk(
+  messageId: string,
+  state: NonNullable<ReturnType<typeof getAskCard>>,
+  d: CardActionDeps,
+): Promise<ToastResponse> {
+  state.submitted = true;
+  const answer = composeAnswer(state);
+
+  // 答案投递给会话（走 pending 队列与普通消息一致）
+  const sess =
+    d.deps.pool.get(state.threadKey) ??
+    (() => {
+      const m = d.deps.pool.getMeta(state.threadKey);
+      return m ? d.deps.pool.start(parseThreadKey(state.threadKey), m.cwd) : undefined;
+    })();
+  if (!sess) {
+    state.submitted = false;
+    return toast('error', '会话已不存在，无法提交（可直接发消息回答）');
+  }
+  d.deps.pending.push(state.threadKey, answer);
+
+  // 卡片 PATCH 为终态
+  await d.deps.replier.patchCard(messageId, renderAskUserCard(state));
+  removeAskCard(messageId);
+  log().info({ messageId, threadKey: state.threadKey }, '提问卡已提交');
+  return toast('success', '✅ 已提交给 Claude');
 }
 
 function extractPayload(raw: unknown): CardActionPayload {
