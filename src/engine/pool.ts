@@ -259,14 +259,23 @@ export class SessionPool {
     // 话题会话不参与「用户活跃会话」指针 — 路由由 thread_id 确定，无需 active 机制
     const isTopic = isTopicThreadKey(key);
     const userKey = userKeyOf(keyInput);
+    const prior = this.meta.get(key);
     const existing = this.sessions.get(key);
     if (existing) {
       this.touch(key, cwd);
       if (!isTopic) this.activeByUser.set(userKey, key);
+      const needRestart =
+        (opts.agent !== undefined && opts.agent !== prior?.agent) ||
+        (opts.apiProfile !== undefined && opts.apiProfile !== prior?.apiProfile) ||
+        (opts.danger !== undefined && opts.danger !== prior?.danger);
+      if (!needRestart) return existing;
+      // opts 变更：start() 是同步接口，无法安全 await oldSession.close()（Codex 需等进程退出）。
+      // 调用方应显式 await pool.stop() → pool.start() 或使用下面的 restart()。
+      log().warn({ threadKey: key, opts, prior: { agent: prior?.agent, apiProfile: prior?.apiProfile, danger: prior?.danger } },
+        'opts 变更但 start() 不重启已运行会话——调用方应先 stop/restart');
       return existing;
     }
 
-    const prior = this.meta.get(key);
     const resumeId = prior?.sessionId;
     // 引擎/API profile：本次显式指定 > 该会话历史选择 > 缺省（工厂内回落全局配置）
     const agent = opts.agent ?? prior?.agent;
@@ -298,6 +307,21 @@ export class SessionPool {
     });
     if (resumeId) log().info({ threadKey: key, resumeId, agent, apiProfile, danger }, '从磁盘恢复会话');
     return sess;
+  }
+
+  /**
+   * 异步重启会话：先 await stop() 等待旧进程完全退出（含 Codex SIGTERM/SIGKILL），
+   * 再 start() 新会话。调用方显式传 opts 覆盖 meta 中的历史选择时使用此路径。
+   */
+  async restart(
+    keyInput: ThreadKey,
+    cwd: string,
+    opts: { agent?: AgentKind; apiProfile?: string; danger?: boolean } = {},
+  ): Promise<AgentSession> {
+    const key = threadKey(keyInput);
+    await this.stop(key, { keepMeta: true });
+    // 同步更新 meta（stop 保留了 meta，start 会用新 opts 覆盖）
+    return this.start(keyInput, cwd, opts);
   }
 
   /**

@@ -27,6 +27,11 @@ export function createApprovalGate(replier: Replier): ApprovalGate {
   return {
     async request(spec, chatId, timeoutMs) {
       const mid = await replier.sendCard(chatId, renderApprovalCard(spec));
+      // sendCard 失败：不存在卡片可点，立即 deny 而不等超时
+      if (!mid) {
+        log().error({ requestId: spec.requestId, tool: spec.toolName }, '审批卡片发送失败，立即 deny');
+        return 'deny';
+      }
       return new Promise<'allow' | 'deny'>((resolve) => {
         const timer = timeoutMs > 0 ? setTimeout(() => {
           const r = pending.get(spec.requestId);
@@ -36,8 +41,7 @@ export function createApprovalGate(replier: Replier): ApprovalGate {
           r.resolve('deny');
         }, timeoutMs) : undefined;
 
-        const rec: PendingApproval = { resolve, spec };
-        if (mid) rec.messageId = mid;
+        const rec: PendingApproval = { resolve, spec, messageId: mid, timer };
         if (timer) rec.timer = timer;
         pending.set(spec.requestId, rec);
       });
@@ -75,13 +79,15 @@ export interface HookBuildOptions {
 
 /** 构建 canUseTool 回调：对接审批卡片，并在 SDK AbortSignal 触发时立即放行为 deny */
 export function buildCanUseTool(opts: HookBuildOptions): CanUseTool {
+  let seq = 0;
   return async (toolName, input, { signal }): Promise<PermissionResult> => {
     if (signal.aborted) return { behavior: 'deny', message: '已中断' };
 
     if (opts.autoApprovePatterns.some((r) => r.test(toolName))) {
       return { behavior: 'allow', updatedInput: input };
     }
-    const requestId = `${opts.threadKey}:${toolName}:${Date.now()}`;
+    // 递增计数器避免同名工具并发时的 requestId 碰撞（Date.now() 在毫秒精度下不足）
+    const requestId = `${opts.threadKey}:${toolName}:${++seq}`;
     const preview = previewJson(input, 1500);
 
     const abortPromise = new Promise<'abort'>((resolve) => {

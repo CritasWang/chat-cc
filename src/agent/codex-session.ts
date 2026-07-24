@@ -122,6 +122,14 @@ export class CodexSession implements AgentSession {
     }
     this.current = proc;
 
+    // ENOENT / EACCES 等 spawn 异步错误不抛同步异常，必须监听 error 事件，
+    // 否则会成为未处理 EventEmitter error 导致进程 crash。
+    proc.on('error', () => {
+      // 进程启动失败：error → close（无 exit）→ exitCode=-2，
+      // 现有 exit 与 terminalEmitted 逻辑能识别异常退出并产出 error EngineEvent，
+      // 此处仅需监听以阻止 crash——无需额外 emit。
+    });
+
     let killTimer: NodeJS.Timeout | undefined;
     const timeoutMs = this.cfg.turnTimeoutMs ?? 0;
     if (timeoutMs > 0) {

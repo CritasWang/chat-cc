@@ -20,6 +20,8 @@ export interface InteractiveCard {
  */
 function isTransientNetworkError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
+  // 也检查错误对象的 HTTP status（如有）
+  const status = (err as Record<string, unknown> | undefined)?.status;
   return (
     msg.includes('ECONN') ||
     msg.includes('EOF') ||
@@ -29,7 +31,10 @@ function isTransientNetworkError(err: unknown): boolean {
     msg.includes('EPIPE') ||
     msg.includes('socket disconnected') ||
     msg.includes('TLS connection') ||
-    msg.includes('tenant_access_token')
+    msg.includes('tenant_access_token') ||
+    Number(status) === 429 ||
+    msg.includes('rate limit') ||
+    msg.includes('Too Many Requests')
   );
 }
 

@@ -120,17 +120,26 @@ async function handleMention(
   };
 
   let answer = '';
-  const q = query({ prompt, options });
+  const abortController = new AbortController();
   const deadline = Date.now() + cfg.claude_ask_timeout_min * 60_000;
-  for await (const msg of q) {
-    if (Date.now() > deadline) {
-      await q.interrupt();
-      break;
+  const timer = setTimeout(() => abortController.abort(), cfg.claude_ask_timeout_min * 60_000);
+  timer.unref();
+  const q = query({ prompt, options: { ...options, abortController } });
+  try {
+    for await (const msg of q) {
+      // deadline 保留做双重保险——abortController 会触发 query 中断，
+      // 但 for-await 在某些 SDK 边界情况下可能不立即响应 abort
+      if (Date.now() > deadline) {
+        await q.interrupt();
+        break;
+      }
+      for (const ev of translateSdkMessage(msg)) {
+        if (ev.kind === 'assistant-text') answer += ev.text;
+        if (ev.kind === 'result' && !answer.trim() && ev.text) answer = ev.text;
+      }
     }
-    for (const ev of translateSdkMessage(msg)) {
-      if (ev.kind === 'assistant-text') answer += ev.text;
-      if (ev.kind === 'result' && !answer.trim() && ev.text) answer = ev.text;
-    }
+  } finally {
+    clearTimeout(timer);
   }
   answer = answer.trim().slice(0, REPLY_MAX);
   if (!answer) {

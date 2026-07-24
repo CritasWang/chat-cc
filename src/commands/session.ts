@@ -142,11 +142,24 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
     if (existingMeta) {
       if (existingMeta.cwd === cwd) {
         // 直接激活 + 懒启动（如果已关闭）；本次指定的引擎/profile 会覆盖历史选择
-        pool.start(
-          { chatId: meta.chatId, senderId: meta.senderId, slot: wanted },
-          cwd,
-          startOpts,
-        );
+        const sess = pool.get(sameSlotKey);
+        const optsChanged = sess &&
+          ((startOpts.agent !== undefined && startOpts.agent !== existingMeta.agent) ||
+           (startOpts.apiProfile !== undefined && startOpts.apiProfile !== existingMeta.apiProfile));
+        if (optsChanged) {
+          // 值与当前 meta 不同且会话正在运行：需先关闭旧进程再重启（Codex 需等 SIGTERM/SIGKILL）
+          await pool.restart(
+            { chatId: meta.chatId, senderId: meta.senderId, slot: wanted },
+            cwd,
+            startOpts,
+          );
+        } else {
+          pool.start(
+            { chatId: meta.chatId, senderId: meta.senderId, slot: wanted },
+            cwd,
+            startOpts,
+          );
+        }
         await replier.replyCard(
           meta.messageId,
           card(cardHeader('💬 已激活已有会话', 'wathet'), [

@@ -215,6 +215,10 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
 
     onStop: (threadKey, keepMeta) => {
       if (!keepMeta) persistence.delete(threadKey);
+      // 清理直播 Turn：/clear、/cd、danger/profile 重启或 idle sweep 停止会话时，
+      // 若旧 turn 未清除，同 threadKey 重启后 ensureTurn 会找到旧 turn 复用，造成
+      // 旧 messageId/state 与新会话事件错配。markInterrupted 幂等（无可清时 no-op）。
+      void streamer.markInterrupted(threadKey);
       // 会话被停止（/danger、/profile 重启、idle 回收、/session stop 等）时，
       // 被杀的 in-flight run 不会再产出 result/error 事件 —— 必须在此解锁 pending scope，
       // 否则该 threadKey 后续消息被静默吞掉（blocked 永不释放，只剩 60min 兜底）。

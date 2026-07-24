@@ -14,7 +14,17 @@ export async function runConfigCmd(args: string[]): Promise<void> {
   if (sub === 'edit') {
     const cfgPath = resolveConfigPath();
     const editor = process.env['EDITOR'] || process.env['VISUAL'] || 'vi';
-    const child = spawn(editor, [cfgPath], { stdio: 'inherit' });
+    let child;
+    try {
+      child = spawn(editor, [cfgPath], { stdio: 'inherit' });
+    } catch (err) {
+      console.error(`无法启动编辑器 ${editor}: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    child.on('error', (err) => {
+      console.error(`编辑器异常: ${err.message}（尝试 EDITOR=${editor}）`);
+      process.exit(1);
+    });
     await new Promise<void>((resolve) => child.on('close', () => resolve()));
     return;
   }

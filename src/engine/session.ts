@@ -59,21 +59,20 @@ export class Session {
   private started = false;
   createdAt = new Date();
   lastUsedAt = new Date();
-  /** 已投递进当前 queue、但当前 query 尚未产出 result 的消息（resume 失效时用于重放） */
+  /** 已投递进当前 query 但尚未被 SDK result 确认的消息（仅 stale-resume 自愈时重放） */
   private pending: SDKUserMessage[] = [];
-  /** 仅带 resumeId 启动时追踪 pending；普通会话零开销 */
-  private trackingPending: boolean;
   /** 一次性闸门：stale-resume 只自愈一次（新建会话无 resume，不会再 stale） */
   private resumeRecovered = false;
   /** close() 后置位：pump 停止分发事件，防止被替换的旧会话（僵尸）继续刷卡片/记账 */
   private closed = false;
+  /** 泵异常退出后置位，下次 send() 触发自动恢复 */
+  private pumpCrashed = false;
 
   readonly cwd: string;
 
   constructor(private readonly cfg: SessionConfig) {
     this.threadKey = cfg.threadKey;
     this.cwd = cfg.cwd;
-    this.trackingPending = !!cfg.resumeId;
     if (cfg.resumeId) this.sessionId = cfg.resumeId;
   }
 
@@ -82,29 +81,40 @@ export class Session {
     this.started = true;
 
     this.q = query({ prompt: this.queue.stream(), options: this.buildOptions(true) });
-    this.pumpPromise = this.runLoop().catch((err) => {
-      // 已 close 的会话（如 /danger 重启后被替换的旧实例）的 pump 收尾异常不再上报，
-      // 避免向已终结的直播卡片发送虚假 error 事件
-      if (this.closed) return;
-      log().error({ err, thread: this.threadKey }, 'session pump 异常退出');
-      void this.cfg.onEvent?.({ kind: 'error', message: String(err) });
-    });
+    this.pumpPromise = this.runLoop().catch((err) => this.handlePumpCrash(err));
+  }
+
+  /** 泵异常收敛：已 close 的会话静默，否则记日志 → 置位 pumpCrashed → 发 error 事件 */
+  private handlePumpCrash(err: unknown): void {
+    // 已 close 的会话（如 /danger 重启后被替换的旧实例）的 pump 收尾异常不再上报，
+    // 避免向已终结的直播卡片发送虚假 error 事件
+    if (this.closed) return;
+    log().error({ err, thread: this.threadKey }, 'session pump 异常退出');
+    // 先置位再发事件：下游 onEvent 拿到 error 时 pumpCrashed 已为 true，
+    // 后续 send() 能正确触发 recoverFromCrash()
+    this.pumpCrashed = true;
+    void this.cfg.onEvent?.({ kind: 'error', message: String(err) });
   }
 
   private buildOptions(withResume: boolean): Options {
+    const resumeId = this.sessionId;
     return {
       cwd: this.cfg.cwd,
       ...(this.cfg.model ? { model: this.cfg.model } : {}),
       ...(this.cfg.allowedTools ? { allowedTools: this.cfg.allowedTools } : {}),
       ...(this.cfg.disallowedTools ? { disallowedTools: this.cfg.disallowedTools } : {}),
       ...(this.cfg.permissionMode ? { permissionMode: this.cfg.permissionMode } : {}),
-      ...(withResume && this.cfg.resumeId ? { resume: this.cfg.resumeId } : {}),
+      ...(withResume && resumeId ? { resume: resumeId } : {}),
       ...(this.cfg.extraOptions ?? {}),
     };
   }
 
   send(text: string): void {
     this.lastUsedAt = new Date();
+    if (this.pumpCrashed) {
+      // 泵已崩溃：自动恢复（重建空 query，不重放 pending，上下文经 sessionId resume）
+      this.recoverFromCrash();
+    }
     if (!this.started) this.start();
     const m: SDKUserMessage = {
       type: 'user',
@@ -112,7 +122,7 @@ export class Session {
       parent_tool_use_id: null,
     };
     this.queue.push(m);
-    if (this.trackingPending) this.pending.push(m);
+    this.pending.push(m);
   }
 
   async interrupt(): Promise<void> {
@@ -138,6 +148,30 @@ export class Session {
       log().warn({ err, thread: this.threadKey, danger }, 'setPermissionMode 在线切换失败，回退重启生效');
       return false;
     }
+  }
+
+  /**
+   * 泵崩溃后自动恢复：使用当前 sessionId 重建 query，**不自动重放 pending**。
+   * 无法证明 pending 中消息的副作用尚未执行——工具可能已成功但 result 未产出。
+   * 仅 stale-resume 自愈路径可安全重放（已知旧会话已不存在）。
+   */
+  private recoverFromCrash(): void {
+    const oldQueue = this.queue;
+    const oldQ = this.q;
+    this.queue = new MessageQueue();
+    const droppedCount = this.pending.length;
+    this.pending = [];
+
+    oldQueue.close();
+    oldQ?.close();
+
+    // 重建空 query（不重放 pending），每次 send 时 push 入队自然触发消费
+    this.q = query({ prompt: this.queue.stream(), options: this.buildOptions(true) });
+    this.pumpPromise = this.runLoop().catch((err) => this.handlePumpCrash(err));
+    this.pumpCrashed = false;
+    this.started = true;
+    log().warn({ thread: this.threadKey, sessionId: this.sessionId, droppedCount },
+      '泵崩溃已恢复（pending 已丢弃，等待新消息）');
   }
 
   async close(timeoutMs = 5000): Promise<void> {
@@ -180,19 +214,20 @@ export class Session {
           if (ev.kind === 'init' && !this.sessionId) this.sessionId = ev.sessionId;
           // stale-resume 拦截：原会话上下文已不存在。不转发该错误 result，直接退出
           // for-await（自动触发旧 query .return() 干净中断），交由 runLoop 重建为新会话。
+          // 用运行时 sessionId（当前 query 实际使用的 resume ID）判断，而非 cfg.resumeId
+          //（cfg.resumeId 仅标记启动时是否有持久化 ID，会话自愈后 sessionId 可能为空）。
           if (
             ev.kind === 'result' &&
             ev.ok === false &&
+            this.sessionId &&
             ev.detail?.errors?.some((e) => e.includes('No conversation found with session ID')) &&
-            this.cfg.resumeId &&
             !this.resumeRecovered
           ) {
             return 'recovered';
           }
           this.lastUsedAt = new Date();
-          // 当前 query 产出成功 result：resume 已验证有效，停止追踪并清空重放缓冲。
-          if (ev.kind === 'result' && ev.ok) {
-            this.trackingPending = false;
+          // 任意非 stale 的 result（无论 ok/error）：消息已被消费，清空重放缓冲
+          if (ev.kind === 'result') {
             this.pending = [];
           }
           await this.cfg.onEvent?.(ev);
@@ -201,8 +236,9 @@ export class Session {
       return 'done';
     } catch (err) {
       // 部分情况下 stale-resume 不以 result 形式出现，而是 SDK 直接抛错。
+      // 用运行时 sessionId 判断：自愈后 sessionId 已置空，不会再误判。
       if (
-        this.cfg.resumeId &&
+        this.sessionId &&
         !this.resumeRecovered &&
         String(err).includes('No conversation found')
       ) {
@@ -220,7 +256,6 @@ export class Session {
   private rebuildWithoutResume(): void {
     const stale = this.sessionId;
     this.resumeRecovered = true;
-    this.trackingPending = false;
     this.sessionId = undefined;
     this.lastUsedAt = new Date();
 

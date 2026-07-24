@@ -94,6 +94,13 @@ export class LiveStreamer {
         turn.state.usage = ev.usage;
         turn.state.durationMs = ev.durationMs;
         closeStreamingText(turn.state);
+        // 先等首次卡片发送链就绪，再判断是否需要 fallback：
+        // cold-start 场景下 result 到达时 ensureTurn 的异步发送链可能还未结束，
+        // turn.messageId 暂时为空 ≠ 真正失败
+        await turn.chain;
+        if (!turn.messageId) {
+          await this.sendTerminalFallback(turn, ev);
+        }
         await this.flushNow(turn);
         this.turns.delete(threadKey);
         await this.deps.onResult?.(threadKey, ev.usage, ev.durationMs, {
@@ -105,6 +112,10 @@ export class LiveStreamer {
         turn.state.phase = 'error';
         turn.state.error = ev.message;
         closeStreamingText(turn.state);
+        await turn.chain;
+        if (!turn.messageId) {
+          await this.sendTerminalFallback(turn, ev.message);
+        }
         await this.flushNow(turn);
         this.turns.delete(threadKey);
         await this.deps.onResult?.(threadKey, undefined, undefined, {
@@ -115,14 +126,16 @@ export class LiveStreamer {
     }
   }
 
-  /** 外部主动通知"用户已中断" — 会把当前轮标记为 interrupted */
+  /** 外部主动通知"用户已中断" — 同步摘除 turn 防复用，异步 PATCH 旧卡片 */
   async markInterrupted(threadKey: string): Promise<void> {
     const turn = this.turns.get(threadKey);
     if (!turn) return;
+    // 先同步删除：同 threadKey 立即重启时不会找到旧 turn
+    this.turns.delete(threadKey);
     turn.state.phase = 'interrupted';
     closeStreamingText(turn.state);
-    await this.flushNow(turn);
-    this.turns.delete(threadKey);
+    // 异步 PATCH 旧卡片（fire-and-forget，已从 map 摘除，不影响新 turn）
+    void this.flushNow(turn);
   }
 
   private ensureTurn(
@@ -238,6 +251,15 @@ export class LiveStreamer {
       });
     }
     return this.deps.replier.sendCard(turn.chatId, cardJson);
+  }
+
+  /** 首次卡片发送失败后，将终态内容作为独立文本消息降级发送 */
+  private async sendTerminalFallback(turn: Turn, resultOrError: EngineEvent | string): Promise<void> {
+    const text = typeof resultOrError === 'string'
+      ? resultOrError
+      : (resultOrError.kind === 'result' && resultOrError.text ? resultOrError.text : fullText(turn.state));
+    if (!text.trim()) return;
+    await this.sendBatchedMarkdown(turn, text);
   }
 
   /** 将长文本分段发送为飞书 Markdown 卡片 */

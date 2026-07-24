@@ -11,6 +11,7 @@ import { log } from '../logger.js';
  */
 
 const CHAT_MODE_TTL_MS = 10 * 60_000;
+const MAX_CACHE_SIZE = 1000;
 
 export interface ThreadResolver {
   /** 事件缺 thread_id 时补查：仅话题群返回值，其余返回 undefined */
@@ -29,6 +30,11 @@ export function buildThreadResolver(client: Lark.Client): ThreadResolver {
       const resp = await client.im.v1.chat.get({ path: { chat_id: chatId } });
       const mode = (resp.data as { chat_mode?: string } | undefined)?.chat_mode ?? 'group';
       modeCache.set(chatId, { mode, at: Date.now() });
+      // 容量保护：超过上限淘汰迭代头（Map 按插入序，头=最旧条目）
+      if (modeCache.size > MAX_CACHE_SIZE) {
+        const first = modeCache.keys().next();
+        if (first.value) modeCache.delete(first.value);
+      }
       return mode;
     } catch (err) {
       log().warn({ err, chatId }, 'chat_mode 查询失败，按普通群处理');

@@ -46,6 +46,18 @@ export function buildFeishuMcpServer(deps: FeishuMcpDeps) {
         return { content: [{ type: 'text', text: '发送失败' }], isError: true };
       }
       lastSentAt.set(chatId, Date.now());
+      // 容量保护：超过硬上限 1000 时，清除所有超过 rate 窗口 10 倍的过期条目
+      if (lastSentAt.size > 1000) {
+        const cutoff = Date.now() - deps.perChatRateLimitMs * 10;
+        for (const [k, t] of lastSentAt) {
+          if (t < cutoff) lastSentAt.delete(k);
+        }
+        // 清除后仍超限：FIFO 强制淘汰（最旧的 rate limit 条目）
+        if (lastSentAt.size > 1000) {
+          const oldest = lastSentAt.keys().next();
+          if (oldest.value) lastSentAt.delete(oldest.value);
+        }
+      }
       log().info({ chatId, messageId: mid }, 'mcp.feishu.send_message OK');
       return { content: [{ type: 'text', text: `sent message_id=${mid}` }] };
     },
