@@ -14,6 +14,7 @@
 - **合并转发直达** — 飞书聊天记录一键合并转发给 bot，自动解析（含卡片文本提取）喂给会话
 - **文档划词评论** — 云文档评论 @bot，自动读取划词与评论线程并回复到原线程（可选，需订阅事件）
 - **API profile 切换（会话级 + 全局）** — 读取本机 `~/.claude/cc-profiles.zsh`；`/profile use <name>` 只切当前会话（类比终端各窗口各自 ccuse），`--global` 切全局默认；`/session start`、`/new chat` 支持 `--profile <name>` 开局指定，选择随会话持久化（可选功能，无该文件则自动隐藏）
+- **模型选择（会话级 + 全局）** — `/model <名字>` 只切当前会话（优先在线热切换，失败自动重启 + resume），`--global` 切全局默认，`/model clear` 回归，`/model list` 看可选；`/session start`、`/new chat` 支持 `--model <name>` 开局指定；优先级：会话覆盖 > profile 第三段 > `claude_model` > daemon 启动环境 > 内置默认（管理员专属）
 - **工具审批卡片** — 高危工具弹「✅ 允许 / ❌ 拒绝」卡片，in-process `canUseTool` 回调（Claude 引擎）
 - **飞书反向 MCP** — Claude 可主动给飞书发消息（`mcp__feishu__send_message`），带 rate limit
 - **会话磁盘持久化** — 原子写（fsync + rename），重启后自动 resume，cost 延续
@@ -24,8 +25,8 @@
 ## 前置条件
 
 - **Node.js >= 20.11**
-- **Claude Code CLI** — `claude` 命令可用（`npm install -g @anthropic-ai/claude-code`）
-- **ANTHROPIC_API_KEY** 已设置
+- **ANTHROPIC_API_KEY** 已设置（或通过 API profile 提供凭据）
+- **Codex CLI**（可选）— 使用 `codex` 引擎时需 `codex` 命令可用
 - 飞书企业自建应用（Bot 能力 + WebSocket 事件）
 
 ## 快速开始
@@ -126,19 +127,21 @@ chat-cc logs -n 50
 | 命令 | 说明 |
 |---|---|
 | `/ping` | 健康检查 |
-| `/status` | 系统状态（版本 / 会话 / 当前 API profile） |
+| `/status` | 系统状态（版本 / 会话 / 当前 API profile / 当前模型） |
 | `/help [--pin]` | 帮助卡片（含常用操作按钮，`--pin` 置顶到群当命令面板） |
 | `/ask [@别名] <问题>` | 无状态单次提问，流式卡片输出 |
-| `/session start [@别名\|path] [--codex\|--claude]` | 启动长驻会话（可按会话选引擎；同群同用户可开多个 slot） |
+| `/session start [@别名\|path] [--codex\|--claude] [--profile <name>] [--model <name>]` | 启动长驻会话（可按会话选引擎/模型；同群同用户可开多个 slot） |
 | `/session switch <slot\|序号>` | 切换活跃会话，其他会话后台保持 |
 | `/session list` / `current` / `stop` | 会话列表 / 当前会话 / 关闭会话 |
-| `/new chat [名字] [@别名] [--topic] [--codex\|--claude] [--profile <name>]` | 管理员创建新群并开好会话（`@别名` 指定项目；`--topic` 建话题群，一个话题一个独立会话） |
+| `/new chat [名字] [@别名] [--topic] [--codex\|--claude] [--profile <name>] [--model <name>]` | 管理员创建新群并开好会话（`@别名` 指定项目；`--topic` 建话题群，一个话题一个独立会话） |
 | `/s <消息>` | 向当前活跃会话发送（非命令文本也自动走这里；话题群里自动按话题路由） |
 | `/stop` | 精确中断当前活跃会话 |
-| `/cd <@别名\|路径>` | 当前会话切换工作目录（新目录开新对话，引擎/profile 等设置保留） |
-| `/clear`（`/reset`） | 清空当前会话上下文原地重开（cwd 与引擎/profile/权限设置保留；话题群里作用于当前话题） |
+| `/cd <@别名\|路径>` | 当前会话切换工作目录（新目录开新对话，引擎/profile/模型等设置保留） |
+| `/clear`（`/reset`） | 清空当前会话上下文原地重开（cwd 与引擎/profile/模型/权限设置保留；话题群里作用于当前话题） |
 | `/profile use <name> [--global]` | 当前会话切 API profile；`--global` 切全局默认（可选，读 `~/.claude/cc-profiles.zsh`） |
 | `/profile [list\|clear\|reload]` | 管理员查看/切换 API profile、回归全局或重读数据源 |
+| `/model <名字> [--global]` | 当前会话切模型；`--global` 切全局默认（写 `claude_model`，跟随全局的会话同步更新）※ 仅 `admin_users` |
+| `/model clear [--global]` / `list` | 回归 profile/全局默认 · 查看可选模型与当前生效链路 |
 | `/usage` | Token/Cost 看板（按会话 + 全局聚合） |
 | `/project` | 项目别名管理 |
 | `/danger on\|off [--global]` | 当前会话切权限模式；`--global` 切全局默认；`clear` 回归全局 ※ admin_users 可收敛 |
@@ -171,7 +174,8 @@ admin_users: []
 agent: "claude"
 codex_bin: "codex"               # codex 可执行文件
 codex_sandbox: "workspace-write" # read-only | workspace-write | danger-full-access
-codex_model: ""                  # 留空用 Codex 默认
+codex_model: ""                  # codex 模型（留空用 Codex 默认）
+claude_model: ""                 # Claude 全局默认模型；优先级低于会话 /model 与 profile
 
 # 工作目录与项目别名
 default_cwd: "."
@@ -184,32 +188,53 @@ allowed_cwd_roots: []            # 额外允许的 cwd 根；会做 realpath 校
 claude_allowed_tools: ["Read", "Glob", "Grep"]
 claude_danger_mode: false        # true 时绕过 canUseTool 审批（codex 引擎下 = danger-full-access 沙箱）
 auto_approve_tools:              # canUseTool 层白名单（正则匹配工具名）
-  - "^(Read|Glob|Grep|LS|WebFetch|WebSearch|TodoWrite)$"
+  - "^(Read|Glob|Grep|LS|LSP|WebFetch|WebSearch|AskUserQuestion|TaskCreate|TaskUpdate|TaskList|TaskGet|NotebookRead|PushNotification)$"
 approval_timeout_ms: 120000      # 审批卡片超时后默认 deny
 max_concurrent_asks: 20          # /ask 全局并发上限
 max_concurrent_asks_per_user: 2  # 单个 chat+用户的 /ask 并发上限
+max_concurrent_comment_queries: 10  # 文档评论查询并发上限
 max_active_sessions: 20          # 同时驻留的会话/query 上限，防批量话题耗尽进程资源
+
+# 超时
+claude_ask_timeout_min: 50       # /ask 单次查询上限（分钟）
+claude_session_timeout_min: 50   # Claude 会话单轮任务上限（分钟）
+codex_first_token_timeout_min: 10  # Codex spawn 后首 token 超时（分钟），超时无输出判定卡死
 
 # 实况卡片
 stream_throttle_ms: 500          # 卡片 PATCH 节流间隔（毫秒）
 message_debounce_ms: 600         # 消息静默窗口：窗口内连续消息合并为一条 prompt；0 关闭合批窗口
+max_chunk_size: 3500             # 长消息分块大小（字符）
 max_pending_messages_per_session: 100
 max_pending_chars_per_session: 100000
 
 # 会话管理
+persistence_dir: ""              # 会话持久化目录（默认 ~/.chat-cc/sessions）
 idle_timeout_minutes: 30         # 空闲超时自动 disconnect（保留磁盘 meta）
 idle_check_seconds: 60
 
-# 飞书反向 MCP
+# 飞书反向 MCP 与通知
 mcp_feishu_rate_limit_ms: 10000  # 同一 chat 发消息最小间隔
 notify_chat_id: ""               # 默认通知群
+notify_quiet_minutes: 2          # 完成通知安静阈值（分钟）：距上次发言超过此时长才推送；0 = 总是推送
+notify_done_ping: true           # 后台会话完成时在源群补发轻量提示（卡片 PATCH 不产生红点）
+status_push_interval_min: 180    # 定期推送状态卡片间隔（分钟）；0 = 关闭
+status_push_chat_id: ""          # 状态推送目标群（留空不推送）
+
+# 群标签（feed 标签，借道本机 lark-cli 用户身份；不需要可留空数组）
+new_chat_tags_claude: ["AI", "Claude"]   # /new chat 建 Claude 会话群时自动打的标签
+new_chat_tags_codex: ["AI", "Codex"]     # /new chat 建 Codex 会话群时自动打的标签
+lark_cli_bin: "lark-cli"         # lark-cli 可执行文件（打标签用）
+danger_tag: "Danger"             # 会话级 danger 开启时给群打的标签（off/clear 时移除；留空禁用）
+
+# 用户消息资源（图片/文件）落盘保留天数，超期自动清理；0 = 不清理
+media_retention_days: 7
 
 log_level: "info"
 ```
 
 ### 升级配置检查
 
-- `admin_users` 默认 fail-closed；空数组意味着无人可执行 `/danger`、`/reload`、全局 profile 等特权操作。升级前应配置明确的管理员 `open_id`。
+- `admin_users` 默认 fail-closed；空数组意味着无人可执行 `/danger`、`/reload`、`/profile`、`/model` 等特权操作。升级前应配置明确的管理员 `open_id`。
 - 配置使用严格 schema，未知键会导致启动失败，以防拼写错误静默生效。已移除的 `claude_bin`、`hook_port`、`agent_env_allowlist` 会作为明确的历史键兼容忽略；升级或回滚前仍应先用 `chat-cc doctor` 检查配置。
 - `agent_env_allowlist` 已移除，可直接从旧配置删除；Claude/Codex 子进程现在继承 daemon 的完整环境。
 
@@ -223,9 +248,10 @@ src/
 ├─ paths.ts                   # 配置目录/文件路径解析（CHAT_CC_HOME / CHAT_CC_CONFIG）
 ├─ config.ts                  # YAML + zod + env 覆盖
 ├─ logger.ts                  # pino
-├─ cli/                       # CLI 子命令实现（init / start / stop / logs / config / doctor …）
+├─ cli/                       # CLI 子命令实现（init / start / stop / logs / config / doctor / version …）
 ├─ agent/
 │  ├─ types.ts                # AgentSession 统一接口（claude | codex）
+│  ├─ env.ts                  # Claude 环境/模型解析（会话覆盖 > profile > claude_model > 启动环境）
 │  ├─ codex-session.ts        # Codex：codex exec 子进程，每轮一进程，threadId 续上下文
 │  ├─ codex-args.ts           # codex exec 参数构建（沙箱/resume/stdin prompt）
 │  └─ codex-jsonl.ts          # Codex JSONL → EngineEvent 状态机翻译
@@ -239,6 +265,8 @@ src/
 │  ├─ thread-id.ts            # 话题群 chat_mode 缓存 + thread_id 补查
 │  ├─ forward.ts              # 合并转发消息解析（text/post/卡片文本提取）
 │  ├─ comments.ts             # 云文档划词评论 @bot → agent → 回评论线程
+│  ├─ media.ts                # 用户消息图片/文件落盘与定期清理
+│  ├─ feed-tag.ts             # 群标签打标（lark-cli 借道用户身份）
 │  └─ cards/                  # 卡片渲染器（live 折叠状态机 / approval / cost / base）
 ├─ engine/
 │  ├─ session.ts              # Claude：每 thread 一个 query() + 输入 queue + resume 自愈
@@ -246,6 +274,7 @@ src/
 │  ├─ pending-queue.ts        # 消息静默窗口合批（run 期间 block/unblock）
 │  ├─ streamer.ts             # 事件驱动卡片 PATCH（throttle + replyTarget 话题锚定）
 │  ├─ api-profiles.ts         # cc-profiles.zsh 解析 + /profile 状态持久化
+│  ├─ runtime-overrides.ts    # 会话级运行时覆盖（模型等）持久化
 │  ├─ hooks.ts                # canUseTool + ApprovalGate（审批卡片 ↔ resolver）
 │  ├─ cost.ts                 # token/cost 聚合
 │  ├─ persistence.ts          # 会话磁盘持久化（原子写）
@@ -256,7 +285,8 @@ src/
 │  └─ owner.ts                # 敏感命令特权判定（仅 admin_users，无管理类 API）
 ├─ mcp/
 │  └─ feishu-server.ts        # Claude → 飞书反向 MCP（send_message / ping）
-└─ commands/                  # /ask /session /new /s /stop /usage /status /help /project /danger /reload /profile
+└─ commands/                  # /ask /session /new /s /stop /usage /status /help /project
+                              # /danger /reload /profile /model /cd /clear
 ```
 
 ---

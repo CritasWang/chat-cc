@@ -12,3 +12,9 @@ logs/
 
 .DS_Store
 .omc/
+
+# Playwright MCP 调试输出
+.playwright-mcp/
+
+# 其他项目的临时截图（wenxibuddy 等）
+wenxibuddy-screenshot-*.png
