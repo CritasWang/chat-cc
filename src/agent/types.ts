@@ -21,7 +21,7 @@ export interface AgentSession {
   createdAt: Date;
   lastUsedAt: Date;
   start(): void;
-  send(text: string): void;
+  send(text: string, opts?: { parentToolUseId?: string }): void;
   interrupt(): Promise<void>;
   close(timeoutMs?: number): Promise<void>;
   /**
@@ -30,6 +30,12 @@ export interface AgentSession {
    * 表示需由调用方回退为重启生效。
    */
   setDanger?(danger: boolean): Promise<boolean>;
+  /**
+   * 可选：在线切换模型（不打断运行中的任务）。
+   * 返回 true 表示已在线生效；false / 未实现（如 Codex 的 --model 固化在每轮
+   * 子进程启动参数里）表示需由调用方回退为重启生效。
+   */
+  setModel?(model: string): Promise<boolean>;
 }
 
 export interface AgentSessionCallbacks {

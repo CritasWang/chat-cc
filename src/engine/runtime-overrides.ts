@@ -17,6 +17,8 @@ import { log } from '../logger.js';
 
 export interface RuntimeOverrides {
   claude_danger_mode?: boolean;
+  /** /model <name> --global 写入；空串表示显式回归“不指定模型” */
+  claude_model?: string;
 }
 
 function overridesPath(): string {
@@ -34,6 +36,8 @@ export function loadRuntimeOverrides(): RuntimeOverrides {
       ...(typeof rec['claude_danger_mode'] === 'boolean'
         ? { claude_danger_mode: rec['claude_danger_mode'] }
         : {}),
+      // 用 typeof 而非真值判断：'' 是合法值（显式回归“不指定模型”）
+      ...(typeof rec['claude_model'] === 'string' ? { claude_model: rec['claude_model'] } : {}),
     };
   } catch (err) {
     log().warn({ err }, 'runtime-overrides 读取失败，忽略');

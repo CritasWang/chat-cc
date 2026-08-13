@@ -219,7 +219,7 @@ async function handleAskAction(
 ): Promise<ToastResponse> {
   const state = messageId ? getAskCard(messageId) : undefined;
   if (!state) {
-    return toast('warning', '该提问已失效（服务重启过），请直接发消息回答');
+    return toast('warning', '该提问已提交过或已失效，无需重复操作');
   }
   if (Date.now() > state.expiresAt) {
     removeAskCard(messageId);
@@ -283,7 +283,8 @@ async function submitAsk(
   state.submitted = true;
   const answer = composeAnswer(state);
 
-  // 答案投递给会话（走 pending 队列与普通消息一致）
+  // 答案投递给会话 — 如果有 askToolUseId，走直连 Session.send 以关联 SDK 响应；
+  // 否则 fallback 走 pending 队列（兼容旧卡片状态）
   let sess = d.deps.pool.get(state.threadKey);
   if (!sess) {
     const m = d.deps.pool.getMeta(state.threadKey);
@@ -303,14 +304,27 @@ async function submitAsk(
     state.submitted = false;
     return toast('error', '会话已不存在，无法提交（可直接发消息回答）');
   }
-  try {
-    d.deps.pending.push(state.threadKey, answer, state.requesterId);
-  } catch (err) {
-    state.submitted = false;
-    if (err instanceof PendingQueueCapacityError) {
-      return toast('warning', '会话积压已满，请等待当前任务结束后再提交');
+
+  if (state.askToolUseId) {
+    // 直接投送带 parent_tool_use_id 的响应，SDK 能正确关联 AskUserQuestion
+    try {
+      sess.send(answer, { parentToolUseId: state.askToolUseId });
+    } catch (err) {
+      state.submitted = false;
+      log().error({ err, threadKey: state.threadKey }, 'AskUser 答案投送失败');
+      return toast('error', '答案发送失败，请重试或直接发消息回答');
     }
-    throw err;
+  } else {
+    // 兼容无 askToolUseId 的旧卡片状态，走 pending 队列
+    try {
+      d.deps.pending.push(state.threadKey, answer, state.requesterId);
+    } catch (err) {
+      state.submitted = false;
+      if (err instanceof PendingQueueCapacityError) {
+        return toast('warning', '会话积压已满，请等待当前任务结束后再提交');
+      }
+      throw err;
+    }
   }
 
   // 卡片 PATCH 为终态

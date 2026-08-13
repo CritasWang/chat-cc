@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { resolveCwd, validateCwd } from '../config.js';
 import { senderKey, type CommandFn } from './types.js';
-import { extractAgentFlag, extractProfileFlag } from './session.js';
+import { extractAgentFlag, extractProfileFlag, extractModelFlag } from './session.js';
 import { applyFeedTags } from '../feishu/feed-tag.js';
 import { card, cardHeader, md } from '../feishu/cards/base.js';
 import { isPrivileged } from '../policy/owner.js';
@@ -26,8 +26,9 @@ export const newCommand: CommandFn = async (args, meta, { cfg, pool, replier, ap
   }
   const { rest: noAgent, agent } = extractAgentFlag(args.trim());
   const { rest: noProfile, profile } = extractProfileFlag(noAgent);
+  const { rest: noModel, model } = extractModelFlag(noProfile);
   let isTopic = false;
-  const cleanedArgs = noProfile.replace(/(^|\s)--topic(?=\s|$)/g, () => {
+  const cleanedArgs = noModel.replace(/(^|\s)--topic(?=\s|$)/g, () => {
     isTopic = true;
     return ' ';
   });
@@ -100,6 +101,7 @@ export const newCommand: CommandFn = async (args, meta, { cfg, pool, replier, ap
       {
         ...(agent ? { agent } : {}),
         ...(profile ? { apiProfile: profile } : {}),
+        ...(model ? { model } : {}),
       },
     );
   } catch (err) {

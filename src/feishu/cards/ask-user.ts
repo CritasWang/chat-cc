@@ -18,12 +18,14 @@ export interface AskCardState {
   /** 每题已选项索引集合（单选题至多一个元素） */
   selections: number[][];
   submitted: boolean;
+  /** AskUserQuestion 的 tool_use_id，提交时用于关联 SDK 响应 */
+  askToolUseId?: string;
 }
 
 export function initialAskState(
   threadKey: string,
   questions: AskQuestion[],
-  context: { requesterId?: string; chatId?: string; generation?: number; ttlMs?: number } = {},
+  context: { requesterId?: string; chatId?: string; generation?: number; ttlMs?: number; askToolUseId?: string } = {},
 ): AskCardState {
   return {
     threadKey,
@@ -34,6 +36,7 @@ export function initialAskState(
     questions,
     selections: questions.map(() => []),
     submitted: false,
+    askToolUseId: context.askToolUseId,
   };
 }
 

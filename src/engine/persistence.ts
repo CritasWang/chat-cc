@@ -17,6 +17,8 @@ export interface PersistedSession {
   apiProfile?: string;
   /** 会话级权限模式覆盖（缺省跟随全局 claude_danger_mode） */
   danger?: boolean;
+  /** 会话级模型覆盖（缺省跟随 profile / 全局 claude_model） */
+  model?: string;
   createdAt: string;
   lastUsedAt: string;
   cost: UsageSnapshot;
@@ -41,6 +43,7 @@ const PersistedSessionSchema = z.object({
   agent: z.enum(['claude', 'codex']).optional(),
   apiProfile: z.string().min(1).optional(),
   danger: z.boolean().optional(),
+  model: z.string().min(1).optional(),
   createdAt: z.string().refine(validDate, 'invalid createdAt'),
   lastUsedAt: z.string().refine(validDate, 'invalid lastUsedAt'),
   cost: UsageSchema.default({

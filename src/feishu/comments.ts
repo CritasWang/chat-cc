@@ -4,7 +4,7 @@ import type { Config } from '../config.js';
 import { isAllowed } from '../auth.js';
 import { translateSdkMessage } from '../engine/events.js';
 import { log } from '../logger.js';
-import { buildAgentEnv } from '../agent/env.js';
+import { buildClaudeEnv, type EnvOverrides } from '../agent/env.js';
 
 /**
  * 云文档划词评论集成（借鉴 lark-bridge bot/comments.ts）。
@@ -36,7 +36,7 @@ export interface CommentHandlerDeps {
   client: Lark.Client;
   cfg: Config;
   /** API profile env 注入（可选功能） */
-  apiProfiles?: { envOverrides(): Record<string, string> };
+  apiProfiles?: { envOverrides(): EnvOverrides };
 }
 
 export function buildCommentHandler(deps: CommentHandlerDeps): (raw: unknown) => Promise<void> {
@@ -117,14 +117,18 @@ async function handleMention(
     (quote ? `划词内容（用户评论针对的原文）:\n"""\n${quote}\n"""\n\n` : '') +
     `评论线程（最后一条是刚 @你 的）:\n${thread}`;
 
-  const envOverrides = deps.apiProfiles?.envOverrides() ?? {};
+  // 评论回复是一次性查询，不走会话池 → 只跟随全局 profile 与全局模型
+  const { env } = buildClaudeEnv({
+    profileOverrides: deps.apiProfiles?.envOverrides() ?? {},
+    globalModel: cfg.claude_model,
+  });
   const options: Options = {
     cwd: cfg.default_cwd,
     // 评论回答所需上下文已完整放入 prompt，不需要访问本地文件或执行工具。
     // 禁用工具，避免文档评论中的提示注入借机触发远程副作用。
     allowedTools: [],
     persistSession: false,
-    env: buildAgentEnv(envOverrides),
+    env,
   };
 
   let answer = '';

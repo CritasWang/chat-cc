@@ -17,6 +17,7 @@ import { validateCwd, type Config } from '../config.js';
 import type { AgentKind } from '../agent/types.js';
 import { isPrivileged } from '../policy/owner.js';
 import { canAccessSession, currentSessionKey, listAccessibleSessions } from './session-context.js';
+import { describeModel, effectiveModelOf } from './model-context.js';
 
 /** 从参数中摘出 --codex / --claude 引擎标记 */
 export function extractAgentFlag(raw: string): { rest: string; agent?: AgentKind } {
@@ -40,6 +41,21 @@ export function extractProfileFlag(raw: string): { rest: string; profile?: strin
     })
     .trim();
   return { rest, ...(profile ? { profile } : {}) };
+}
+
+/**
+ * 从参数中摘出 --model <name> / --model=<name>。
+ * 字符集要容纳第三方模型 id：`[1m]` 之类的上下文窗口后缀、以及 `:@/` 分隔符。
+ */
+export function extractModelFlag(raw: string): { rest: string; model?: string } {
+  let model: string | undefined;
+  const rest = raw
+    .replace(/(^|\s)--model[= ]([A-Za-z0-9_.:@/[\]-]+)(?=\s|$)/g, (_m, _pre, name: string) => {
+      model = name;
+      return ' ';
+    })
+    .trim();
+  return { rest, ...(model ? { model } : {}) };
 }
 
 /** 解析 start 参数 -> { cwd, slot, label } */
@@ -107,7 +123,8 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
   if (sub === 'start') {
     try {
     const { rest: noAgent, agent } = extractAgentFlag(rest);
-    const { rest: cleaned, profile } = extractProfileFlag(noAgent);
+    const { rest: noProfile, profile } = extractProfileFlag(noAgent);
+    const { rest: cleaned, model } = extractModelFlag(noProfile);
     const parsedStart = parseStartArgs(cleaned, cfg);
     const checkedCwd = validateCwd(cfg, parsedStart.cwd);
     if (!checkedCwd.ok) {
@@ -143,9 +160,13 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
     if (profile && engineLabel === 'codex') {
       return '❌ API profile 仅适用于 Claude 引擎，Codex 会话不支持 --profile';
     }
+    if (model && !isPrivileged(cfg, meta.senderId)) {
+      return '⛔ 指定模型仅管理员可用';
+    }
     const startOpts = {
       ...(agent ? { agent } : {}),
       ...(profile ? { apiProfile: profile } : {}),
+      ...(model ? { model } : {}),
     };
 
     // 话题群固定“一话题一会话”。/session start 必须操作当前 topic key，不能创建一个
@@ -161,7 +182,8 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
         running && existingMeta &&
         ((startOpts.agent !== undefined &&
           startOpts.agent !== (existingMeta.sessionIdAgent ?? existingMeta.agent ?? cfg.agent)) ||
-         (startOpts.apiProfile !== undefined && startOpts.apiProfile !== existingMeta.apiProfile)),
+         (startOpts.apiProfile !== undefined && startOpts.apiProfile !== existingMeta.apiProfile) ||
+         (startOpts.model !== undefined && startOpts.model !== existingMeta.model)),
       );
 
       let resetForCwd = false;
@@ -182,7 +204,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
             `**范围**: 当前话题\n` +
               `**项目**: \`${label}\`\n` +
               `**cwd**: \`${cwd}\`\n` +
-              `**引擎**: \`${engineLabel}\`${profile ? `\n**API profile**: \`${profile}\`` : ''}` +
+              `**引擎**: \`${engineLabel}\`${profile ? `\n**API profile**: \`${profile}\`` : ''}${model ? `\n**模型**: \`${model}\`` : ''}` +
               (resetForCwd ? '\n\n*工作目录已变化，旧对话上下文已清空*' : ''),
           ),
           hr(),
@@ -210,7 +232,8 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
         const optsChanged = sess &&
           ((startOpts.agent !== undefined &&
             startOpts.agent !== (existingMeta.sessionIdAgent ?? existingMeta.agent ?? cfg.agent)) ||
-           (startOpts.apiProfile !== undefined && startOpts.apiProfile !== existingMeta.apiProfile));
+           (startOpts.apiProfile !== undefined && startOpts.apiProfile !== existingMeta.apiProfile) ||
+           (startOpts.model !== undefined && startOpts.model !== existingMeta.model));
         if (optsChanged) {
           // 值与当前 meta 不同且会话正在运行：需先关闭旧进程再重启（Codex 需等 SIGTERM/SIGKILL）
           await pool.restart(
@@ -254,7 +277,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
           `**项目**: \`${label}\`\n` +
             `**slot**: \`${finalSlot}\`${finalSlot !== wanted ? `（原 \`${wanted}\` 已被占用，自动追加编号）` : ''}\n` +
             `**cwd**: \`${cwd}\`\n` +
-            `**引擎**: \`${engineLabel}\`${profile ? `\n**API profile**: \`${profile}\`` : ''}`,
+            `**引擎**: \`${engineLabel}\`${profile ? `\n**API profile**: \`${profile}\`` : ''}${model ? `\n**模型**: \`${model}\`` : ''}`,
         ),
         hr(),
         btnRow([
@@ -376,6 +399,7 @@ export const sessionCommand: CommandFn = async (args, meta, { cfg, pool, replier
             `**cwd**: \`${m?.cwd ?? sess.cwd}\`\n` +
             `**引擎**: \`${m?.agent ?? cfg.agent}\`\n` +
             `**API profile**: \`${m?.apiProfile ?? '（跟随全局）'}\`\n` +
+            `**模型**: ${describeModel(effectiveModelOf(sess.threadKey, { cfg, pool, apiProfiles }))}\n` +
             `**权限**: \`${m?.danger === undefined ? '（跟随全局）' : m.danger ? 'danger' : '审批'}\`\n` +
             `**sid**: \`${sid}\``,
         ),

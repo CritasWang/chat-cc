@@ -193,7 +193,7 @@ export class Session {
     };
   }
 
-  send(text: string): void {
+  send(text: string, opts?: { parentToolUseId?: string }): void {
     if (this.closed) throw new Error(`session ${this.threadKey} is closed`);
     this.lastUsedAt = new Date();
     if (this.pumpNeedsRestart) {
@@ -203,7 +203,7 @@ export class Session {
     const m: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content: text },
-      parent_tool_use_id: null,
+      parent_tool_use_id: opts?.parentToolUseId ?? null,
     };
     if (!this.queue.push(m)) {
       // JS 同步段内 close() 无法插入这里；该分支用于防未来重构或异常 queue 状态静默吞消息。
@@ -237,6 +237,29 @@ export class Session {
       return true;
     } catch (err) {
       log().warn({ err, thread: this.threadKey, danger }, 'setPermissionMode 在线切换失败，回退重启生效');
+      return false;
+    }
+  }
+
+  /**
+   * 在线切换模型（SDK 控制请求），不打断运行中的任务。
+   *
+   * 只处理「切到某个具体模型」。传空值时必须返回 false 交给调用方重启：
+   * SDK 的 setModel(undefined) 只会回落到**本 CLI 子进程启动时**的
+   * ANTHROPIC_MODEL，而不是「不指定模型」—— 想真正清掉那个环境变量，
+   * 只有重建子进程 env 一条路（见 pool.setSessionModel）。
+   *
+   * @returns true 已在线生效；false 需由调用方回退为重启生效。
+   */
+  async setModel(model: string): Promise<boolean> {
+    if (!model || !this.started || !this.q || this.closed) return false;
+    try {
+      await this.q.setModel(model);
+      // 记入 cfg：pump 重建 / stale-resume 自愈（→ buildOptions）时保持当前模型
+      this.cfg.model = model;
+      return true;
+    } catch (err) {
+      log().warn({ err, thread: this.threadKey, model }, 'setModel 在线切换失败，回退重启生效');
       return false;
     }
   }

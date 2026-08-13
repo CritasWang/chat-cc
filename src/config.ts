@@ -23,6 +23,11 @@ const ConfigSchema = z.object({
 
   claude_allowed_tools: z.array(z.string()).default(['Read', 'Glob', 'Grep']),
   claude_danger_mode: z.boolean().default(false),
+  /**
+   * Claude 全局默认模型。优先级：会话级 /model > profile 第三段 > 本项 >
+   * daemon 启动时的 ANTHROPIC_MODEL > 不指定（Claude Code 内置默认）。
+   */
+  claude_model: z.string().default(''),
 
   /** 会话引擎：claude（Agent SDK，默认）或 codex（codex exec 子进程） */
   agent: z.enum(['claude', 'codex']).default('claude'),
@@ -44,6 +49,8 @@ const ConfigSchema = z.object({
 
   claude_ask_timeout_min: z.number().int().positive().default(50),
   claude_session_timeout_min: z.number().int().positive().default(50),
+  /** Codex exec spawn 后首 token 超时（分钟）；超时未收到任何 JSONL → 判定卡死 */
+  codex_first_token_timeout_min: z.number().int().positive().default(10),
   /** /ask 资源上限，防单个用户或全局并发耗尽 Agent 进程。 */
   max_concurrent_asks: z.number().int().positive().default(20),
   max_concurrent_asks_per_user: z.number().int().positive().default(2),
@@ -138,6 +145,10 @@ export function loadConfig(path?: string): ConfigLoadResult {
   const overrides = loadRuntimeOverrides();
   if (overrides.claude_danger_mode !== undefined) {
     cfg.claude_danger_mode = overrides.claude_danger_mode;
+  }
+  // 空串是有意义的值（/model clear --global = 回归"不指定模型"），不能用真值判断
+  if (overrides.claude_model !== undefined) {
+    cfg.claude_model = overrides.claude_model;
   }
 
   const envId = process.env['FEISHU_APP_ID'];

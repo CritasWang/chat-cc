@@ -17,6 +17,10 @@ export function renderHelpCard(): InteractiveCard {
       cmdBtn('🔑 API Profile', 'profile', 'list'),
     ]),
     btnRow([
+      cmdBtn('🧠 模型', 'model', ''),
+      cmdBtn('📋 可选模型', 'model', 'list'),
+    ]),
+    btnRow([
       cmdBtn('📂 项目', 'project', ''),
       cmdBtn('💰 用量', 'usage', ''),
     ]),
@@ -25,8 +29,8 @@ export function renderHelpCard(): InteractiveCard {
     md(
       '**💬 会话交互（支持多会话并存）**\n' +
         '`/s <消息>`  发送到当前活跃会话\n' +
-        '`/new chat [名字] [@别名|/路径] [--topic] [--codex|--claude] [--profile <name>]`  自动建新群并开好会话\n' +
-        '`/session start [@别名|path] [--codex|--claude] [--profile <name>]`  新建/激活一个 slot\n' +
+        '`/new chat [名字] [@别名|/路径] [--topic] [--codex|--claude] [--profile <name>] [--model <name>]`  自动建新群并开好会话\n' +
+        '`/session start [@别名|path] [--codex|--claude] [--profile <name>] [--model <name>]`  新建/激活一个 slot\n' +
         '`/session switch <slot名|序号>`  在已有会话之间切换，**其他会话仍在后台运行**\n' +
         '`/session current`  查看当前活跃会话\n' +
         '`/session list`  列出所有会话（每行带 ▶ 激活按钮）\n' +
@@ -51,6 +55,7 @@ export function renderHelpCard(): InteractiveCard {
         '`/danger on|off`  当前会话切权限模式 · 加 `--global` 切全局\n' +
         '`/reload`  校验配置并重启后台 daemon\n' +
         '`/profile use <name>`  当前会话切 API 配置 · 加 `--global` 切全局默认\n' +
+        '`/model <名字>`  当前会话切模型 · 加 `--global` 切全局默认 · `/model clear` 回归 · `/model list` 看可选\n' +
         '`/usage`  Token/Cost 看板  ·  `/ping`  健康检查\n' +
         '`/help --pin`  把本卡片置顶到群（当命令面板用）',
     ),

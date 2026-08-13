@@ -150,7 +150,10 @@ export class LiveStreamer {
             const askState = initialAskState(
               turn.threadKey,
               questions,
-              context,
+              {
+                ...context,
+                askToolUseId: ev.id,
+              },
             );
             const mid = await this.sendToTurn(
               turn,
@@ -314,21 +317,42 @@ export class LiveStreamer {
       })
       .then(async () => {
         if (!turn.messageId) return;
-        const ok = await this.deps.replier.patchCard(
+        const result = await this.deps.replier.patchCard(
           turn.messageId,
           renderLiveCard(turn.state),
         );
-        if (ok) {
+        if (result.ok) {
           turn.lastPatchAt = Date.now();
           return;
         }
-        // 卡片更新失败 — 仅在终态（done/error）做 fallback
+
+        // 卡片更新失败 — 按原因分别降级
         const isTerminal =
           turn.state.phase === "done" || turn.state.phase === "error";
-        if (!isTerminal) return;
+        const reason = (result as { ok: false; reason: string }).reason;
+        const stale = reason === 'stale' || reason === 'size-limit' || reason === 'transient';
+        if (stale) {
+          // messageId 失效 / 内容超限 / 重试耗尽 → 发新卡片替代
+          const newState = reason === 'size-limit'
+            ? trimLiveCardState(turn.state)
+            : turn.state;
+          const newMid = await this.sendToTurn(
+            turn,
+            renderLiveCard(newState),
+          );
+          if (newMid) {
+            turn.messageId = newMid;
+            turn.lastPatchAt = Date.now();
+          }
+          // size-limit：后续内容还是可能超，但 trim 版本已缩小；继续 PATCH 新卡
+          if (reason === 'size-limit') {
+            turn.state = newState;
+          }
+          if (!isTerminal) return;
+        }
 
+        // 终态：再发精简卡片 + 内容文本降级
         const text = fullText(turn.state);
-        // 用精简卡片重试（去掉正文，仅保留状态信息）
         const minState: LiveCardState = {
           ...turn.state,
           blocks: [
@@ -343,7 +367,6 @@ export class LiveStreamer {
           turn.messageId,
           renderLiveCard(minState),
         );
-        // 全量内容分批发送为文本消息
         if (text.trim()) {
           await this.sendBatchedMarkdown(turn, text);
         }
@@ -432,6 +455,25 @@ export class LiveStreamer {
     if (timer) clearTimeout(timer);
     this.interrupted.delete(threadKey);
   }
+}
+
+/** 当卡片内容超过飞书尺寸限制时，裁剪 state 中的块内容。 */
+function trimLiveCardState(state: LiveCardState): LiveCardState {
+  return {
+    ...state,
+    blocks: state.blocks.map((b) => {
+      if (b.kind === 'text' && b.content.length > 2000) {
+        return { ...b, content: b.content.slice(0, 2000) + '\n\n…（内容过长，已截断）', streaming: false };
+      }
+      if (b.kind === 'tool' && b.tool.input.length > 500) {
+        return {
+          ...b,
+          tool: { ...b.tool, input: b.tool.input.slice(0, 500) + '\n…（截断）' },
+        };
+      }
+      return b;
+    }),
+  };
 }
 
 /** 按段落边界拆分长文本，每段不超过 maxLen 字符 */

@@ -151,7 +151,7 @@ async function stop(): Promise<void> {
 
   process.kill(record.pid, 'SIGTERM');
 
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     await sleep(200);
     if (!isAlive(record.pid)) {

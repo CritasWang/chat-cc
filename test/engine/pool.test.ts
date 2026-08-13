@@ -282,3 +282,130 @@ describe('SessionPool stop 状态机', () => {
     }
   });
 });
+
+describe('SessionPool 会话级模型', () => {
+  /** 造一个可观测 setModel 的会话工厂 */
+  function makePool(opts: { setModel?: (m: string) => Promise<boolean> } = {}) {
+    const created: string[] = [];
+    const setModelCalls: string[] = [];
+    const pool = new SessionPool({
+      createSession: ({ threadKey: key, cwd, model }) => {
+        created.push(model ?? '(none)');
+        return {
+          threadKey: key,
+          cwd,
+          createdAt: new Date(),
+          lastUsedAt: new Date(),
+          start() {},
+          send() {},
+          async interrupt() {},
+          async close() {},
+          async setModel(m: string) {
+            setModelCalls.push(m);
+            return opts.setModel ? opts.setModel(m) : true;
+          },
+        };
+      },
+      onEvent: () => {},
+    });
+    return { pool, created, setModelCalls };
+  }
+
+  it('切到具体模型时在线生效，不重启会话', async () => {
+    const { pool, created, setModelCalls } = makePool();
+    const input = { chatId: 'oc_x', senderId: 'ou_x', slot: 'model-inplace' };
+    const key = threadKey(input);
+    pool.start(input, '/tmp');
+
+    await expect(pool.setSessionModel(key, 'grok-4.5', 'grok-4.5')).resolves.toBe('inplace');
+    expect(setModelCalls).toEqual(['grok-4.5']);
+    expect(created).toHaveLength(1); // 没有重启
+    expect(pool.getMeta(key)?.model).toBe('grok-4.5');
+  });
+
+  it('回归"不指定模型"时必须重启（在线 setModel 无法删掉 env 变量）', async () => {
+    const { pool, created, setModelCalls } = makePool();
+    const input = { chatId: 'oc_x', senderId: 'ou_x', slot: 'model-clear' };
+    const key = threadKey(input);
+    pool.start(input, '/tmp', { model: 'grok-4.5' });
+
+    await expect(pool.setSessionModel(key, undefined, undefined)).resolves.toBe('restarted');
+    expect(setModelCalls).toEqual([]); // 绝不能调 setModel(undefined)
+    expect(created).toEqual(['grok-4.5', '(none)']);
+    expect(pool.getMeta(key)?.model).toBeUndefined();
+  });
+
+  it('在线切换失败时回退重启', async () => {
+    const { pool, created } = makePool({ setModel: async () => false });
+    const input = { chatId: 'oc_x', senderId: 'ou_x', slot: 'model-fallback' };
+    const key = threadKey(input);
+    pool.start(input, '/tmp');
+
+    await expect(pool.setSessionModel(key, 'gpt-5.6-sol', 'gpt-5.6-sol')).resolves.toBe('restarted');
+    expect(created).toEqual(['(none)', 'gpt-5.6-sol']);
+  });
+
+  it('会话未运行时只更新元数据，下次懒启动生效', async () => {
+    const { pool, created } = makePool();
+    const input = { chatId: 'oc_x', senderId: 'ou_x', slot: 'model-meta' };
+    const key = threadKey(input);
+    pool.start(input, '/tmp');
+    await pool.stop(key, { keepMeta: true, reason: 'idle' });
+
+    await expect(pool.setSessionModel(key, 'grok-4.5', 'grok-4.5')).resolves.toBe('meta');
+    expect(pool.getMeta(key)?.model).toBe('grok-4.5');
+
+    pool.start(input, '/tmp'); // 懒启动：从 meta 继承模型
+    expect(created).toEqual(['(none)', 'grok-4.5']);
+  });
+
+  it('model 与 danger 并发切换共用串行队列，两者都成功', async () => {
+    // 曾经的隐患：两条独立队列各自 beginLifecycle，会互相顶掉 token，
+    // 让先发起的一方误报 'missing'。
+    const pool = new SessionPool({
+      createSession: ({ threadKey: key, cwd }) => ({
+        threadKey: key,
+        cwd,
+        createdAt: new Date(),
+        lastUsedAt: new Date(),
+        start() {},
+        send() {},
+        async interrupt() {},
+        async close() {},
+        async setDanger() {
+          await new Promise((r) => setTimeout(r, 5));
+          return true;
+        },
+        async setModel() {
+          await new Promise((r) => setTimeout(r, 5));
+          return true;
+        },
+      }),
+      onEvent: () => {},
+    });
+    const input = { chatId: 'oc_x', senderId: 'ou_x', slot: 'model-danger' };
+    const key = threadKey(input);
+    pool.start(input, '/tmp');
+
+    const [danger, model] = await Promise.all([
+      pool.setSessionDanger(key, true, true),
+      pool.setSessionModel(key, 'grok-4.5', 'grok-4.5'),
+    ]);
+    expect(danger).toBe('inplace');
+    expect(model).toBe('inplace');
+    expect(pool.getMeta(key)?.danger).toBe(true);
+    expect(pool.getMeta(key)?.model).toBe('grok-4.5');
+  });
+
+  it('重启时继承 meta 里的模型，显式 opts 可覆盖', async () => {
+    const { pool, created } = makePool();
+    const input = { chatId: 'oc_x', senderId: 'ou_x', slot: 'model-inherit' };
+    pool.start(input, '/tmp', { model: 'grok-4.5' });
+
+    await pool.restart(input, '/tmp'); // 不传 opts → 继承
+    expect(created).toEqual(['grok-4.5', 'grok-4.5']);
+
+    await pool.restart(input, '/tmp', { model: 'gpt-5.6-sol' }); // 显式覆盖
+    expect(created).toEqual(['grok-4.5', 'grok-4.5', 'gpt-5.6-sol']);
+  });
+});

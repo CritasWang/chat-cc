@@ -27,6 +27,8 @@ export interface CodexSessionConfig extends AgentSessionCallbacks {
   resumeId?: string;
   /** 单轮超时（毫秒），超时 SIGTERM；<=0 不限制 */
   turnTimeoutMs?: number;
+  /** Codex spawn 后首 token 超时（毫秒）；超时无任何 JSONL → 判定卡死；<=0 不限制 */
+  firstTokenTimeoutMs?: number;
   /** 传给 codex 子进程的最小环境。 */
   env?: NodeJS.ProcessEnv;
 }
@@ -55,7 +57,7 @@ export class CodexSession implements AgentSession {
     // Codex 无常驻进程，start 为 no-op（首条消息时 spawn）
   }
 
-  send(text: string): void {
+  send(text: string, _opts?: { parentToolUseId?: string }): void {
     if (this.closed) throw new Error(`codex session ${this.threadKey} is closed`);
     this.lastUsedAt = new Date();
     this.queue.push(text);
@@ -147,6 +149,23 @@ export class CodexSession implements AgentSession {
       killTimer.unref?.();
     }
 
+    // 首 token 超时：spawn 后 N 分钟无任何 JSONL 输出 → 判定卡死
+    let firstTokenTimer: NodeJS.Timeout | undefined;
+    let firstTokenArrived = false;
+    const firstTokenMs = this.cfg.firstTokenTimeoutMs ?? 0;
+    if (firstTokenMs > 0) {
+      firstTokenTimer = setTimeout(() => {
+        if (!firstTokenArrived && !this.closed) {
+          timedOut = true;
+          log().warn({ threadKey: this.threadKey, firstTokenMs }, 'codex 首 token 超时，判定卡死');
+          void terminateProcess(proc, 2_000).catch((err) =>
+            log().warn({ err, threadKey: this.threadKey }, 'codex 首 token 终止失败'),
+          );
+        }
+      }, firstTokenMs);
+      firstTokenTimer.unref?.();
+    }
+
     const stderrBuf: string[] = [];
     proc.stderr.on('data', (d: Buffer) => {
       const s = d.toString();
@@ -167,6 +186,12 @@ export class CodexSession implements AgentSession {
       for await (const line of rl) {
         const trimmed = line.trim();
         if (!trimmed) continue;
+        // 首 token 定时器：第一个有效 JSONL 行到达即清除
+        if (firstTokenTimer && !firstTokenArrived) {
+          firstTokenArrived = true;
+          clearTimeout(firstTokenTimer);
+          firstTokenTimer = undefined;
+        }
         let parsed: unknown;
         try {
           parsed = JSON.parse(trimmed);
@@ -196,7 +221,9 @@ export class CodexSession implements AgentSession {
           }
           if (ev.kind === 'result' && timedOut) {
             ev.ok = false;
-            ev.text = `codex 执行超时（>${Math.ceil(timeoutMs / 60_000)} 分钟），已终止`;
+            ev.text = sawWork
+              ? `codex 执行超时（>${Math.ceil(timeoutMs / 60_000)} 分钟），已终止`
+              : `codex 启动后 ${Math.ceil(firstTokenMs / 60_000)} 分钟无响应（上下文积压可能过大），建议 \`/reset\` 清空上下文后重试`;
           }
           await this.emit(ev);
         }
@@ -233,7 +260,9 @@ export class CodexSession implements AgentSession {
           }
           if (ev.kind === 'result' && timedOut) {
             ev.ok = false;
-            ev.text = `codex 执行超时（>${Math.ceil(timeoutMs / 60_000)} 分钟），已终止`;
+            ev.text = sawWork
+              ? `codex 执行超时（>${Math.ceil(timeoutMs / 60_000)} 分钟），已终止`
+              : `codex 启动后 ${Math.ceil(firstTokenMs / 60_000)} 分钟无响应（上下文积压可能过大），建议 \`/reset\` 清空上下文后重试`;
           }
           await this.emit(ev);
         }
@@ -258,6 +287,7 @@ export class CodexSession implements AgentSession {
         await this.emit({ kind: 'error', message: `codex 运行异常: ${String(err)}` });
       }
     } finally {
+      if (firstTokenTimer) clearTimeout(firstTokenTimer);
       if (killTimer) clearTimeout(killTimer);
       rl.close();
       if (this.current === proc) this.current = undefined;

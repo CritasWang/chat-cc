@@ -53,11 +53,13 @@ export function renderStatusCard(
   cfg: Config,
   pool: SessionPool,
   configPath?: string,
-  apiProfile?: { name: string; baseUrl: string },
+  apiProfile?: { name: string; baseUrl: string; model?: string; smallFastModel?: string },
   /** chatId → 群名（异步预解析后传入；缺省回落显示 threadKey） */
   chatNames?: Map<string, string>,
   /** 已在命令层完成鉴权过滤的会话；缺省仅供内部管理场景使用全量。 */
   visibleSessions?: ReturnType<SessionPool['list']>,
+  /** 由命令层注入：解析某会话实际生效的模型（避免卡片层依赖 ApiProfileStore） */
+  resolveModel?: (threadKey: string) => { value?: string; source: string },
 ): InteractiveCard {
   const sessions = visibleSessions ?? pool.list();
   const activeCount = sessions.filter((s) => s.active).length;
@@ -69,7 +71,14 @@ export function renderStatusCard(
   sysLines.push(`进程运行: \`${formatUptime(process.uptime())}\``);
   if (configPath) sysLines.push(`配置: \`${configPath}\``);
   sysLines.push(`默认目录: \`${cfg.default_cwd}\``);
-  if (apiProfile) sysLines.push(`API profile: **${apiProfile.name}** · \`${apiProfile.baseUrl}\``);
+  if (apiProfile) {
+    sysLines.push(
+      `API profile: **${apiProfile.name}** · \`${apiProfile.baseUrl}\`` +
+        (apiProfile.model ? ` · 模型 \`${apiProfile.model}\`` : '') +
+        (apiProfile.smallFastModel ? ` · 小模型 \`${apiProfile.smallFastModel}\`` : ''),
+    );
+  }
+  sysLines.push(`默认模型: ${cfg.claude_model ? `\`${cfg.claude_model}\`` : '（未设置）'}`);
 
   // 会话区：群名 + slot + 项目 + 引擎，一行一会话，附关闭按钮
   const sessionElems: unknown[] = [];
@@ -86,8 +95,16 @@ export function renderStatusCard(
       const project = s.cwd.split('/').filter(Boolean).pop() ?? s.cwd;
       const engine = m?.agent ?? cfg.agent;
       const dangerMark = (m?.danger ?? cfg.claude_danger_mode) ? ' · ⚠️danger' : '';
+      // 📍 表示该会话有自己的模型覆盖（不跟随全局）
+      const resolved = resolveModel?.(s.threadKey);
+      const modelMark = resolved?.value
+        ? ` · 🧠${resolved.value}${resolved.source === 'session' ? '📍' : ''}`
+        : '';
       sessionElems.push(
-        md(`${marker} **${chatName}**${slotSuffix}\n　📁 ${project} · ${engine}${dangerMark} · \`${s.cwd}\``),
+        md(
+          `${marker} **${chatName}**${slotSuffix}\n` +
+            `　📁 ${project} · ${engine}${dangerMark}${modelMark} · \`${s.cwd}\``,
+        ),
       );
       sessionElems.push(
         btnRow([

@@ -42,6 +42,15 @@ function isTransientNetworkError(err: unknown): boolean {
   );
 }
 
+export type PatchResult =
+  | { ok: true }
+  | { ok: false; reason: 'transient' | 'stale' | 'size-limit' };
+
+function isSizeLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('11310') || msg.includes('element exceeds');
+}
+
 export class Replier {
   constructor(private readonly client: Lark.Client) {}
 
@@ -221,29 +230,33 @@ export class Replier {
     }
   }
 
-  async patchCard(messageId: string, card: InteractiveCard, retries = 2): Promise<boolean> {
+  async patchCard(messageId: string, card: InteractiveCard, retries = 2): Promise<PatchResult> {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         await this.client.im.v1.message.patch({
           path: { message_id: messageId },
           data: { content: JSON.stringify(card) },
         });
-        return true;
+        return { ok: true };
       } catch (err) {
         const isLast = attempt === retries;
-        if (isLast) {
-          log().error({ err, messageId }, '更新卡片失败（重试耗尽）');
-          return false;
-        }
-        if (isTransientNetworkError(err)) {
+        if (isTransientNetworkError(err) && !isLast) {
           await delay(200 * 2 ** attempt);
           continue;
         }
+        if (isSizeLimitError(err)) {
+          log().error({ err, messageId }, '更新卡片失败（内容超限）');
+          return { ok: false, reason: 'size-limit' };
+        }
+        if (isTransientNetworkError(err)) {
+          log().error({ err, messageId }, '更新卡片失败（重试耗尽）');
+          return { ok: false, reason: 'transient' };
+        }
         log().error({ err, messageId }, '更新卡片失败（非瞬时错误）');
-        return false;
+        return { ok: false, reason: 'stale' };
       }
     }
-    return false;
+    return { ok: false, reason: 'stale' };
   }
 }
 

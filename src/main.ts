@@ -40,8 +40,10 @@ import { clearCommand } from './commands/clear.js';
 import { newCommand } from './commands/newchat.js';
 import { dangerCommand, reloadCommand } from './commands/danger.js';
 import { profileCommand } from './commands/profile.js';
+import { modelCommand } from './commands/model.js';
+import { effectiveModelOf } from './commands/model-context.js';
 import { isAllowed } from './auth.js';
-import { buildAgentEnv } from './agent/env.js';
+import { buildClaudeEnv } from './agent/env.js';
 import { canAccessSession, listAccessibleSessions } from './commands/session-context.js';
 import { isPrivileged } from './policy/owner.js';
 import { MessageReceiptStore } from './feishu/message-receipts.js';
@@ -116,6 +118,7 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
       ...(meta.sessionIdAgent ? { sessionIdAgent: meta.sessionIdAgent } : {}),
       ...(meta.apiProfile ? { apiProfile: meta.apiProfile } : {}),
       ...(meta.danger !== undefined ? { danger: meta.danger } : {}),
+      ...(meta.model ? { model: meta.model } : {}),
       createdAt: meta.createdAt.toISOString(),
       lastUsedAt: meta.lastUsedAt.toISOString(),
       cost: cost.get(tk),
@@ -194,17 +197,31 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
       const engine = input.agent ?? cfg.agent;
       // 权限模式：会话级覆盖 > 全局 claude_danger_mode
       const danger = input.danger ?? cfg.claude_danger_mode;
+      // API profile：会话级覆盖 > 全局当前（可选功能）。
+      // 显式指定的 profile 已失效时抛错（fail-closed），不静默换端点/凭据。
+      const profileOverrides = apiProfiles.envOverridesFor(input.apiProfile);
       // —— Codex 引擎：codex exec 子进程（无 MCP/审批钩子，靠沙箱模式约束）——
       if (engine === 'codex') {
+        // Codex 走自己的 --model，但 env 仍统一经 buildClaudeEnv 构造：
+        // 一是让 profile（含 EXTRA）对 codex 子进程同样生效（此前是无参数
+        // buildAgentEnv()，profile 完全不生效），二是清掉 daemon 继承的 ANTHROPIC_* 残留。
+        const { env } = buildClaudeEnv({
+          profileOverrides,
+          sessionModel: input.model,
+          globalModel: cfg.claude_model,
+        });
+        // 会话级 /model 对 codex 映射到 `codex exec --model`；否则用全局 codex_model
+        const codexModel = input.model || cfg.codex_model;
         return new CodexSession({
           threadKey: input.threadKey,
           cwd: input.cwd,
           codexBin: cfg.codex_bin,
           sandbox: danger ? 'danger-full-access' : cfg.codex_sandbox,
-          ...(cfg.codex_model ? { model: cfg.codex_model } : {}),
+          ...(codexModel ? { model: codexModel } : {}),
           ...(input.resumeId ? { resumeId: input.resumeId } : {}),
-          env: buildAgentEnv(),
+          env,
           turnTimeoutMs: cfg.claude_session_timeout_min * 60_000,
+          firstTokenTimeoutMs: cfg.codex_first_token_timeout_min * 60_000,
           onEvent: input.onEvent,
           onNotice: input.onNotice,
         });
@@ -229,9 +246,15 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
         thinking: { type: 'adaptive' },
         settings: { autoCompactEnabled: true },
       };
-      // API profile：会话级覆盖 > 全局当前（可选功能）
-      const envOverrides = apiProfiles.envOverridesFor(input.apiProfile);
-      extra['env'] = buildAgentEnv(envOverrides);
+      // 模型：profile 第三段 > cfg.claude_model > daemon 启动快照 > 不指定。
+      // env 与 Options.model 双写：前者管 small fast model 与“删掉继承值”，
+      // 后者是 SDK 在线 setModel 能保持的那一路（见 Session.setModel）。
+      const { env, model } = buildClaudeEnv({
+        profileOverrides,
+        sessionModel: input.model,
+        globalModel: cfg.claude_model,
+      });
+      extra['env'] = env;
       // canUseTool 始终安装、allowDangerouslySkipPermissions 始终开启：
       // 让 /danger 能通过 SDK setPermissionMode 在线双向切换（default ↔ bypassPermissions），
       // 免重启、不打断运行中的任务（见 Session.setDanger / pool.setSessionDanger）。
@@ -252,6 +275,7 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
       return new Session({
         threadKey,
         cwd,
+        ...(model.value ? { model: model.value } : {}),
         allowedTools: cfg.claude_allowed_tools,
         ...(resumeId ? { resumeId } : {}),
         ...(danger ? { permissionMode: 'bypassPermissions' as const } : {}),
@@ -412,6 +436,7 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
   router.register('clear', clearCommand, ['reset']);
   router.register('danger', dangerCommand);
   router.register('profile', profileCommand);
+  router.register('model', modelCommand);
   router.register('reload', reloadCommand);
   router.register(
     'usage',
@@ -453,9 +478,17 @@ export async function main(opts?: { foreground?: boolean }): Promise<void> {
                 cfg,
                 pool,
                 cfgPath,
-                cur ? { name: cur.name, baseUrl: cur.baseUrl } : undefined,
+                cur
+                  ? {
+                      name: cur.name,
+                      baseUrl: cur.baseUrl,
+                      ...(cur.model ? { model: cur.model } : {}),
+                      ...(cur.smallFastModel ? { smallFastModel: cur.smallFastModel } : {}),
+                    }
+                  : undefined,
                 names,
                 sessions,
+                (tk) => effectiveModelOf(tk, { cfg, pool, apiProfiles }),
               ),
             );
         }

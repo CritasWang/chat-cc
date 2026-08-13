@@ -13,6 +13,8 @@ export interface CreateSessionInput {
   apiProfile?: string;
   /** 会话级权限模式覆盖：true=danger / false=审批；缺省跟随全局 claude_danger_mode */
   danger?: boolean;
+  /** 会话级模型覆盖；缺省跟随 profile 第三段 / 全局 claude_model */
+  model?: string;
   onEvent: (e: EngineEvent) => void | Promise<void>;
   onNotice: (n: { text: string; staleSessionId?: string }) => void;
 }
@@ -113,6 +115,8 @@ interface ThreadMeta {
   apiProfile?: string;
   /** 会话级权限模式覆盖（undefined = 跟随全局 claude_danger_mode） */
   danger?: boolean;
+  /** 会话级模型覆盖（undefined = 跟随 profile / 全局 claude_model） */
+  model?: string;
   createdAt: Date;
   lastUsedAt: Date;
 }
@@ -125,8 +129,12 @@ export class SessionPool {
   private generationCounter = 0;
   /** 复合生命周期操作的 last-writer-wins token，防 restart/reset 与 destroy 并发后复活旧会话。 */
   private readonly lifecycleTokens = new Map<string, symbol>();
-  /** SDK setPermissionMode 存在外部副作，同 key 必须串行，避免旧请求后完成覆盖新状态。 */
-  private readonly dangerUpdates = new Map<string, Promise<unknown>>();
+  /**
+   * SDK 控制请求（setPermissionMode / setModel）存在外部副作用，同 key 必须串行：
+   * 既避免旧请求后完成覆盖新状态，也避免 danger 与 model 两类切换各自排队时
+   * 互相抢占 lifecycle token，导致先发起的一方误报「会话已关闭」。
+   */
+  private readonly sessionUpdates = new Map<string, Promise<unknown>>();
   private readonly closing = new Map<string, { keepMeta: boolean; reason: StopReason; promise: Promise<void> }>();
   private idleTimer?: NodeJS.Timeout;
 
@@ -158,6 +166,7 @@ export class SessionPool {
         ...(p.agent ? { agent: p.agent } : {}),
         ...(p.apiProfile ? { apiProfile: p.apiProfile } : {}),
         ...(p.danger !== undefined ? { danger: p.danger } : {}),
+        ...(p.model ? { model: p.model } : {}),
         createdAt: p.createdAt ? new Date(p.createdAt) : new Date(),
         lastUsedAt: p.lastUsedAt ? new Date(p.lastUsedAt) : new Date(),
       });
@@ -344,7 +353,7 @@ export class SessionPool {
   start(
     keyInput: ThreadKey,
     cwd: string,
-    opts: { agent?: AgentKind; apiProfile?: string; danger?: boolean } = {},
+    opts: { agent?: AgentKind; apiProfile?: string; danger?: boolean; model?: string } = {},
   ): AgentSession {
     const key = threadKey(keyInput);
     if (this.closing.has(key)) {
@@ -362,7 +371,8 @@ export class SessionPool {
         existing.cwd !== cwd ||
         (opts.agent !== undefined && opts.agent !== (prior?.sessionIdAgent ?? prior?.agent)) ||
         (opts.apiProfile !== undefined && opts.apiProfile !== prior?.apiProfile) ||
-        (opts.danger !== undefined && opts.danger !== prior?.danger);
+        (opts.danger !== undefined && opts.danger !== prior?.danger) ||
+        (opts.model !== undefined && opts.model !== prior?.model);
       if (!needRestart) return existing;
       // opts 变更：start() 是同步接口，无法安全 await oldSession.close()（Codex 需等进程退出）。
       // 调用方应显式 await pool.stop() → pool.start() 或使用下面的 restart()。
@@ -381,6 +391,7 @@ export class SessionPool {
     const agent = agentOverride ?? this.deps.defaultAgent?.() ?? 'claude';
     const apiProfile = opts.apiProfile ?? prior?.apiProfile;
     const danger = opts.danger ?? prior?.danger;
+    const model = opts.model ?? prior?.model;
     const resumeId = prior?.sessionId && prior.sessionIdAgent === agent ? prior.sessionId : undefined;
     if (prior?.sessionId && !resumeId) {
       log().warn(
@@ -399,6 +410,7 @@ export class SessionPool {
         agent,
         ...(apiProfile ? { apiProfile } : {}),
         ...(danger !== undefined ? { danger } : {}),
+        ...(model ? { model } : {}),
         onEvent: (e) => this.handleEvent(key, generation, e),
         onNotice: (n) => this.handleNotice(key, generation, n),
       });
@@ -411,6 +423,7 @@ export class SessionPool {
         ...(agentOverride ? { agent: agentOverride } : {}),
         ...(apiProfile ? { apiProfile } : {}),
         ...(danger !== undefined ? { danger } : {}),
+        ...(model ? { model } : {}),
         createdAt: prior?.createdAt ?? new Date(),
         lastUsedAt: new Date(),
       });
@@ -431,7 +444,9 @@ export class SessionPool {
     }
     if (!isTopic) this.activate(userKey, key);
     this.deps.onMetaChange?.(key);
-    if (resumeId) log().info({ threadKey: key, resumeId, agent, apiProfile, danger }, '从磁盘恢复会话');
+    if (resumeId) {
+      log().info({ threadKey: key, resumeId, agent, apiProfile, danger, model }, '从磁盘恢复会话');
+    }
     return sess;
   }
 
@@ -442,7 +457,7 @@ export class SessionPool {
   async restart(
     keyInput: ThreadKey,
     cwd: string,
-    opts: { agent?: AgentKind; apiProfile?: string; danger?: boolean } = {},
+    opts: { agent?: AgentKind; apiProfile?: string; danger?: boolean; model?: string } = {},
   ): Promise<AgentSession> {
     const key = threadKey(keyInput);
     const token = this.beginLifecycle(key);
@@ -465,7 +480,7 @@ export class SessionPool {
   async resetContext(
     key: string,
     cwd: string,
-    opts: { agent?: AgentKind; apiProfile?: string; danger?: boolean } = {},
+    opts: { agent?: AgentKind; apiProfile?: string; danger?: boolean; model?: string } = {},
   ): Promise<AgentSession | undefined> {
     const token = this.beginLifecycle(key);
     try {
@@ -525,15 +540,75 @@ export class SessionPool {
     danger: boolean | undefined,
     effective: boolean,
   ): Promise<'inplace' | 'restarted' | 'meta' | 'missing'> {
-    const previous = this.dangerUpdates.get(key) ?? Promise.resolve();
-    const task = previous
-      .catch(() => {})
-      .then(() => this.applySessionDanger(key, danger, effective));
-    this.dangerUpdates.set(key, task);
+    return this.serialize(key, () => this.applySessionDanger(key, danger, effective));
+  }
+
+  /** 同 key 的 SDK 控制请求串行队列（danger / model 共用）。 */
+  private serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.sessionUpdates.get(key) ?? Promise.resolve();
+    const task = previous.catch(() => {}).then(fn);
+    this.sessionUpdates.set(key, task);
+    return task.finally(() => {
+      if (this.sessionUpdates.get(key) === task) this.sessionUpdates.delete(key);
+    });
+  }
+
+  /**
+   * 设置/清除某会话的模型覆盖并使之生效。
+   *
+   * model 传 undefined 表示清除会话覆盖、回归 profile/全局默认；
+   * effective 是「会话覆盖 > profile > 全局 > 启动快照」解析后的最终值，
+   * undefined 表示最终「不指定模型」。
+   *
+   * 优先在线切换（Session.setModel，不打断运行中的任务）；引擎不支持、切换
+   * 失败、或目标是「不指定模型」时回退为重启生效（后者只能靠重建 env 实现）。
+   * @returns 'inplace' 在线生效 | 'restarted' 重启生效 | 'meta' 会话未运行仅更新元数据 | 'missing' 无此会话
+   */
+  async setSessionModel(
+    key: string,
+    model: string | undefined,
+    effective: string | undefined,
+  ): Promise<'inplace' | 'restarted' | 'meta' | 'missing'> {
+    return this.serialize(key, () => this.applySessionModel(key, model, effective));
+  }
+
+  private async applySessionModel(
+    key: string,
+    model: string | undefined,
+    effective: string | undefined,
+  ): Promise<'inplace' | 'restarted' | 'meta' | 'missing'> {
+    // 与 applySessionDanger 同理：先等 closing 结束再抢 token，避免打断进行中的重启。
+    await this.waitForClosing(key);
+    const token = this.beginLifecycle(key);
+    const m = this.meta.get(key);
     try {
-      return await task;
+      if (!m) return 'missing';
+      if (model === undefined) delete m.model;
+      else m.model = model;
+      this.deps.onMetaChange?.(key);
+
+      const s = this.get(key);
+      if (!s) return 'meta';
+
+      // effective 为空（回归“不指定模型”）无法在线生效：子进程里的
+      // ANTHROPIC_MODEL 只有重建 env 才能真正删掉。
+      if (effective && s.setModel && (await s.setModel(effective))) {
+        if (
+          !this.isCurrentLifecycle(key, token) ||
+          this.sessions.get(key) !== s ||
+          !this.meta.has(key)
+        ) return 'missing';
+        log().info({ threadKey: key, model: effective }, '模型已在线切换（未重启会话）');
+        return 'inplace';
+      }
+
+      if (!this.isCurrentLifecycle(key, token)) return 'missing';
+      await this.stopInternal(key, { keepMeta: true, reason: 'restart' });
+      if (!this.isCurrentLifecycle(key, token) || !this.meta.has(key)) return 'missing';
+      this.start(parseThreadKey(key), m.cwd);
+      return 'restarted';
     } finally {
-      if (this.dangerUpdates.get(key) === task) this.dangerUpdates.delete(key);
+      this.endLifecycle(key, token);
     }
   }
 

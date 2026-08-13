@@ -1,7 +1,7 @@
 import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { log } from "../logger.js";
 import { resolveCwd, validateCwd } from "../config.js";
-import { buildAgentEnv } from "../agent/env.js";
+import { buildClaudeEnv } from "../agent/env.js";
 import { buildCanUseTool } from "../engine/hooks.js";
 import { translateSdkMessage } from "../engine/events.js";
 import {
@@ -153,13 +153,17 @@ export const askCommand: CommandFn = async (
       }, delay);
     };
 
-    const envOverrides = apiProfiles?.envOverrides() ?? {};
+    // /ask 是一次性查询，不走会话池 → 只跟随全局 profile 与全局模型
+    const { env } = buildClaudeEnv({
+      profileOverrides: apiProfiles?.envOverrides() ?? {},
+      globalModel: cfg.claude_model,
+    });
     const options: Options = {
       cwd,
       allowedTools: cfg.claude_allowed_tools,
       persistSession: false,
       thinking: { type: "adaptive" },
-      env: buildAgentEnv(envOverrides),
+      env,
       ...(cfg.claude_danger_mode
         ? {
             permissionMode: "bypassPermissions" as const,

@@ -30,6 +30,7 @@ export const sendCommand: CommandFn = async (args, meta, { cfg, pool, streamer, 
           ...(anchor?.agent ? { agent: anchor.agent } : {}),
           ...(anchor?.apiProfile ? { apiProfile: anchor.apiProfile } : {}),
           ...(anchor?.danger !== undefined ? { danger: anchor.danger } : {}),
+          ...(anchor?.model ? { model: anchor.model } : {}),
         });
       } catch (err) {
         if (err instanceof SessionPoolCapacityError) {
